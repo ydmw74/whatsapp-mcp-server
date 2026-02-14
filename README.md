@@ -15,6 +15,9 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 - **A WhatsApp account** linked to a phone
 - **An MCP-compatible client** (Claude Desktop, Claude Code, etc.)
 
+> **Compatibility:** Works with both **regular WhatsApp** and **WhatsApp Business** accounts. Baileys implements the WhatsApp Web Multi-Device protocol, which is identical for both account types. Business-specific features (catalogs, auto-replies, labels) are not supported by this server.
+
+
 ## Quick Start
 
 ### 1. Clone and Build
