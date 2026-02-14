@@ -4,10 +4,10 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 
 ## Features
 
-- **** — Check connection status (connected, waiting for QR, error)
-- **** — List available chats and groups with metadata
-- **** — Send text messages to contacts or groups
-- **** — Get group details, participants, and admin info
+- **`whatsapp_get_status`** — Check connection status (connected, waiting for QR, error)
+- **`whatsapp_list_chats`** — List available chats and groups with metadata
+- **`whatsapp_send_message`** — Send text messages to contacts or groups
+- **`whatsapp_get_group_info`** — Get group details, participants, and admin info
 
 ## Prerequisites
 
@@ -19,41 +19,59 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 
 ### 1. Clone and Build
 
-
+```bash
+git clone https://github.com/ydmw74/whatsapp-mcp-server.git
+cd whatsapp-mcp-server
+npm install
+npm run build
+```
 
 ### 2. First Run — QR Code Authentication
 
 Run the server once manually to complete the QR code pairing:
 
-
+```bash
+node dist/index.js
+```
 
 A QR code will appear in your terminal. Scan it with your phone:
 
 **WhatsApp > Settings > Linked Devices > Link a Device**
 
-After successful pairing, the session is persisted in . You won't need to scan again unless you unlink the device.
+After successful pairing, the session is persisted in `~/.whatsapp-mcp/auth`. You won't need to scan again unless you unlink the device.
 
 ### 3. Configure Your MCP Client
 
 #### Claude Desktop
 
-Add to your :
+Add to your `claude_desktop_config.json`:
 
-
+```json
+{
+  "mcpServers": {
+    "whatsapp": {
+      "command": "node",
+      "args": ["/absolute/path/to/whatsapp-mcp-server/dist/index.js"]
+    }
+  }
+}
+```
 
 #### Claude Code
 
-
+```bash
+claude mcp add whatsapp node /absolute/path/to/whatsapp-mcp-server/dist/index.js
+```
 
 ## Configuration
 
 | Environment Variable | Default | Description |
 |---|---|---|
-|  |  | Directory for session persistence |
+| `WHATSAPP_AUTH_DIR` | `~/.whatsapp-mcp/auth` | Directory for session persistence |
 
 ## Tools Reference
 
-### 
+### `whatsapp_get_status`
 
 Check if WhatsApp is connected and ready.
 
@@ -61,45 +79,65 @@ Check if WhatsApp is connected and ready.
 
 **Returns:** Connection status, phone number, or QR code if authentication is pending.
 
-### 
+### `whatsapp_list_chats`
 
 List available WhatsApp chats.
 
 **Parameters:**
--  (number, 1-100, default: 20) — Maximum chats to return
+- `limit` (number, 1-100, default: 20) — Maximum chats to return
 
 **Returns:** List of chats with ID, name, type (group/DM), and unread count.
 
-### 
+### `whatsapp_send_message`
 
 Send a text message.
 
 **Parameters:**
--  (string) — Phone number with country code (e.g., ) or full JID
--  (string) — Message text (max 4096 chars)
+- `chat_id` (string) — Phone number with country code (e.g., `4915123456789`) or full JID
+- `text` (string) — Message text (max 4096 chars)
 
 **Returns:** Message ID and timestamp.
 
-### 
+### `whatsapp_get_group_info`
 
 Get detailed group information.
 
 **Parameters:**
--  (string) — Group JID (e.g., )
+- `group_id` (string) — Group JID (e.g., `120363012345678901@g.us`)
 
 **Returns:** Group subject, description, participant list with admin status.
 
+## How It Works
+
+You do **not** start the server manually. Your MCP client (Claude Desktop, Claude Code, etc.) launches and manages the server process automatically in the background.
+
+When you open a chat in Claude Desktop, it spawns `node dist/index.js` as a child process and communicates with it over **stdio** (stdin/stdout). When you close the chat, the process is stopped. You don't need to manage it yourself.
+
+The **only manual step** is the one-time QR code authentication (see Quick Start, Step 2). After that, the session is persisted to disk and the server reconnects automatically on every subsequent start.
+
 ## Architecture
 
-
+```
+┌──────────────────┐     stdio      ┌──────────────────┐
+│  Claude / LLM    │ ◄──────────── │  MCP Server      │
+│  Client          │ ──────────── │  (this project)  │
+└──────────────────┘               └────────┬─────────┘
+                                            │
+                                   Baileys Protocol
+                                            │
+                                   ┌────────▼─────────┐
+                                   │  WhatsApp Web    │
+                                   │  Servers         │
+                                   └──────────────────┘
+```
 
 The server uses **stdio transport** for local MCP communication and **Baileys** for the WhatsApp Web protocol. Session state is persisted to disk so re-authentication is only needed once.
 
 ## Security Considerations
 
-- **Session data** is stored locally in . Protect this directory — anyone with access can impersonate your WhatsApp account.
+- **Session data** is stored locally in `~/.whatsapp-mcp/auth`. Protect this directory — anyone with access can impersonate your WhatsApp account.
 - **No messages are logged** by the MCP server. Messages flow directly between Baileys and your LLM client.
-- The LLM client should **always confirm with the user** before sending messages via .
+- The LLM client should **always confirm with the user** before sending messages via `whatsapp_send_message`.
 - This project uses the unofficial WhatsApp Web protocol. WhatsApp may block accounts that violate their Terms of Service. Use responsibly.
 
 ## Limitations
@@ -110,7 +148,19 @@ The server uses **stdio transport** for local MCP communication and **Baileys** 
 
 ## Development
 
+```bash
+# Install dependencies
+npm install
 
+# Run in development mode (auto-reload)
+npm run dev
+
+# Build
+npm run build
+
+# Clean build artifacts
+npm run clean
+```
 
 ## Acknowledgements
 
