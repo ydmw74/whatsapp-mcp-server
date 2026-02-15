@@ -1,6 +1,6 @@
 # Handoff / Current State (WhatsApp MCP Server)
 
-Repo: `/Users/markus/whatsapp-mcp-server`
+Repo: `<repo-root>`
 
 ## Where We Left Off
 
@@ -42,7 +42,7 @@ Media support was merged via PR #4: https://github.com/ydmw74/whatsapp-mcp-serve
 
 1. Update local checkout:
 ```bash
-cd /Users/markus/whatsapp-mcp-server
+cd <repo-root>
 git checkout main
 git pull
 npm install
@@ -73,4 +73,4 @@ It should prompt for `Device label (...)` before showing the QR code.
 - `whatsapp_download_media` only works for messages observed since the server started (raw message cache is in-memory and bounded).
 - No automatic audio transcoding: for `kind=voice` you should send a compatible file (typically OGG/Opus).
 - MCP config (Codex) was adjusted to run via `node` (because `dist/index.js` is not necessarily executable):
-  - `~/.codex/config.toml` uses `command="node"` and `args=["/Users/markus/whatsapp-mcp-server/dist/index.js"]`.
+  - `~/.codex/config.toml` uses `command="node"` and `args=["/absolute/path/to/whatsapp-mcp-server/dist/index.js"]`.
