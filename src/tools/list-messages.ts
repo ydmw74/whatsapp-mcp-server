@@ -24,7 +24,8 @@ Args:
   - limit (number): Maximum messages to return (1-100, default: 20)
 
 Returns:
-  A formatted list of messages with timestamp, sender, and text.`,
+  A formatted list of messages with timestamp, sender, and text.
+  If a message contains media, the output includes basic media metadata and a hint to use whatsapp_download_media.`,
       inputSchema: ListMessagesInputSchema,
       annotations: {
         readOnlyHint: true,
@@ -53,6 +54,17 @@ Returns:
           const chatLabel = params.chat_id ? "" : ` (${m.chatName})`;
           lines.push(`- **${time}** ${sender}${chatLabel}: ${m.text}`);
           lines.push(`  ID: \`${m.id}\`  Chat: \`${m.chatId}\``);
+          if (m.media) {
+            const voice = m.media.kind === "audio" && m.media.isVoiceNote ? " (voice-note)" : "";
+            const parts: string[] = [];
+            parts.push(`${m.media.kind}${voice}`);
+            if (m.media.mimetype) parts.push(`mimetype=${m.media.mimetype}`);
+            if (m.media.fileName) parts.push(`fileName=${m.media.fileName}`);
+            if (typeof m.media.fileLength === "number") parts.push(`bytes=${m.media.fileLength}`);
+            if (typeof m.media.seconds === "number") parts.push(`seconds=${m.media.seconds}`);
+            lines.push(`  Media: ${parts.join("  ")}`);
+            lines.push(`  Download: \`whatsapp_download_media\` with chat_id=\`${m.chatId}\` message_id=\`${m.id}\``);
+          }
         }
 
         return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -68,4 +80,3 @@ Returns:
     }
   );
 }
-

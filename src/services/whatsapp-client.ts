@@ -5,16 +5,16 @@
 
 import makeWASocket, {
   DisconnectReason,
+  Browsers,
   useMultiFileAuthState,
   WASocket,
-  proto,
   WAMessage,
-  Contact,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
-  isJidGroup,
-  isJidUser,
-  jidNormalizedUser,
+  downloadMediaMessage,
+  extensionForMediaMessage,
+  normalizeMessageContent,
+  getContentType,
 } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
 import * as os from "os";
@@ -33,6 +33,16 @@ export interface WhatsAppMessage {
   isFromMe: boolean;
   isGroup: boolean;
   type: string;
+  media?: WhatsAppMedia;
+}
+
+export interface WhatsAppMedia {
+  kind: "image" | "video" | "document" | "audio" | "sticker" | "unknown";
+  mimetype?: string;
+  fileName?: string;
+  fileLength?: number;
+  seconds?: number;
+  isVoiceNote?: boolean;
 }
 
 export interface WhatsAppChat {
@@ -61,6 +71,7 @@ export class WhatsAppClient {
   private persistMessages: boolean;
   private maxMessagesPerChat: number;
   private maxMessagesTotal: number;
+  private deviceName?: string;
   private connectionCallbacks: ConnectionCallback[] = [];
   private _status: ConnectionStatus = { connected: false };
   private qrDisplayed = false;
@@ -68,6 +79,7 @@ export class WhatsAppClient {
   private saveChatStoreTimer: NodeJS.Timeout | null = null;
   private saveChatStoreInFlight: Promise<void> = Promise.resolve();
   private messageStore: Map<string, StoredMessage[]> = new Map();
+  private rawMessageByKey: Map<string, WAMessage> = new Map();
   private saveMessageStoreTimer: NodeJS.Timeout | null = null;
   private saveMessageStoreInFlight: Promise<void> = Promise.resolve();
   private reconnectCount440 = 0;
@@ -86,6 +98,7 @@ export class WhatsAppClient {
     this.persistMessages = persistRaw === "1" || persistRaw === "true" || persistRaw === "yes" || persistRaw === "y";
     this.maxMessagesPerChat = Number(process.env.WHATSAPP_MAX_MESSAGES_PER_CHAT || "200");
     this.maxMessagesTotal = Number(process.env.WHATSAPP_MAX_MESSAGES_TOTAL || "2000");
+    this.deviceName = (process.env.WHATSAPP_DEVICE_NAME || "").trim() || undefined;
   }
 
   get status(): ConnectionStatus {
@@ -246,8 +259,13 @@ export class WhatsAppClient {
       // Each connect() gets a unique generation ID
       const generation = ++this.socketGeneration;
 
+      const browser = this.deviceName
+        ? Browsers.appropriate(this.deviceName)
+        : undefined;
+
       this.socket = makeWASocket({
         ...(version ? { version } : {}),
+        ...(browser ? { browser } : {}),
         auth: {
           creds: state.creds,
           keys: makeCacheableSignalKeyStore(state.keys, logger as any),
@@ -480,6 +498,106 @@ export class WhatsAppClient {
     };
   }
 
+  async sendFile(
+    chatId: string,
+    filePath: string,
+    opts: {
+      kind?: "document" | "image" | "video" | "audio" | "voice";
+      caption?: string;
+      mimetype?: string;
+      fileName?: string;
+    } = {}
+  ): Promise<{ id: string; timestamp: number }> {
+    const sock = this.ensureConnected();
+    const normalizedId = this.normalizeJid(chatId);
+
+    const kind = opts.kind || "document";
+    const caption = opts.caption;
+    const expandedPath = filePath.startsWith("~/") ? path.join(os.homedir(), filePath.slice(2)) : filePath;
+    const resolvedPath = path.isAbsolute(expandedPath) ? expandedPath : path.resolve(expandedPath);
+    const fileName = opts.fileName || path.basename(resolvedPath);
+    const mimetype = opts.mimetype;
+
+    // Fail early with a clear error if the path is wrong/unreadable.
+    await fs.promises.access(resolvedPath, fs.constants.R_OK);
+
+    // Use `{ url: filePath }` so Baileys can stream from disk.
+    const content: any = (() => {
+      switch (kind) {
+        case "image":
+          return { image: { url: resolvedPath }, caption };
+        case "video":
+          return { video: { url: resolvedPath }, caption };
+        case "audio":
+          return { audio: { url: resolvedPath }, mimetype, ptt: false };
+        case "voice":
+          return { audio: { url: resolvedPath }, mimetype: mimetype || "audio/ogg; codecs=opus", ptt: true };
+        case "document":
+        default:
+          return { document: { url: resolvedPath }, mimetype, fileName, caption };
+      }
+    })();
+
+    const result = await sock.sendMessage(normalizedId, content);
+    return {
+      id: result?.key?.id || "unknown",
+      timestamp: this.toUnixSeconds((result as any)?.messageTimestamp),
+    };
+  }
+
+  async downloadMedia(
+    chatId: string,
+    messageId: string,
+    outputDir?: string
+  ): Promise<{ path: string; media: WhatsAppMedia }> {
+    const sock = this.ensureConnected();
+    const normalizedChatId = this.normalizeJid(chatId);
+    const key = `${normalizedChatId}:${messageId}`;
+    const msg = this.rawMessageByKey.get(key);
+    if (!msg) {
+      throw new Error(
+        "Message not found in the in-memory store. " +
+        "The server can only download media for messages it has observed since it started."
+      );
+    }
+
+    const messageContent = normalizeMessageContent(msg.message) as any;
+    let ext = "bin";
+    try {
+      ext = messageContent ? extensionForMediaMessage(messageContent) : "bin";
+    } catch {
+      ext = "bin";
+    }
+    const meta: WhatsAppMedia = this.extractMediaMetaFromContent(messageContent) || { kind: "unknown" };
+
+    const dir = outputDir
+      ? (outputDir.startsWith("~/") ? path.join(os.homedir(), outputDir.slice(2)) : outputDir)
+      : path.join(this.authDir, "..", "downloads");
+    await fs.promises.mkdir(dir, { recursive: true });
+
+    const baseName = meta.fileName || `whatsapp-${messageId}.${ext}`;
+    const safeName = baseName.replace(/[\\/:*?"<>|]/g, "_");
+    const outPath = path.join(dir, safeName);
+
+    const logger = (sock as any).logger || pino({ level: "warn" }, pino.destination({ dest: 2, sync: true }));
+    const data = await downloadMediaMessage(
+      msg,
+      "buffer",
+      {},
+      { reuploadRequest: (m) => (sock as any).updateMediaMessage(m), logger }
+    );
+    await fs.promises.writeFile(outPath, data);
+
+    return {
+      path: outPath,
+      media: {
+        ...meta,
+        fileName: safeName,
+        fileLength: data.length,
+      },
+    };
+  }
+
   async listMessages(chatId?: string, limit: number = 20): Promise<WhatsAppMessage[]> {
     const normalized = chatId ? this.normalizeJid(chatId) : undefined;
     const messages = normalized
@@ -582,7 +700,10 @@ export class WhatsAppClient {
 
     // Enforce global limit
     const total = this.countMessages();
-    if (total <= this.maxMessagesTotal) return;
+    if (total <= this.maxMessagesTotal) {
+      this.pruneRawMessageStore();
+      return;
+    }
     const all = this.flattenMessageStore().sort((a, b) => a.timestamp - b.timestamp);
     const keep = all.slice(Math.max(0, all.length - this.maxMessagesTotal));
     this.messageStore.clear();
@@ -590,6 +711,20 @@ export class WhatsAppClient {
       const list = this.messageStore.get(msg.chatId) || [];
       list.push(msg);
       this.messageStore.set(msg.chatId, list);
+    }
+    this.pruneRawMessageStore();
+  }
+
+  private pruneRawMessageStore(): void {
+    // Keep raw messages only for messages still present in our (bounded) message store.
+    const keep = new Set<string>();
+    for (const list of this.messageStore.values()) {
+      for (const m of list) {
+        keep.add(`${m.chatId}:${m.id}`);
+      }
+    }
+    for (const key of this.rawMessageByKey.keys()) {
+      if (!keep.has(key)) this.rawMessageByKey.delete(key);
     }
   }
 
@@ -608,6 +743,7 @@ export class WhatsAppClient {
 
     const senderName = (msg.pushName || "").trim() || sender.split("@")[0];
     const { text, type } = this.extractTextAndType(msg);
+    const media = this.extractMediaMeta(msg);
 
     const stored: StoredMessage = {
       id,
@@ -619,11 +755,13 @@ export class WhatsAppClient {
       isFromMe,
       isGroup,
       type,
+      ...(media ? { media } : {}),
     };
 
     const list = this.messageStore.get(chatId) || [];
     list.push(stored);
     this.messageStore.set(chatId, list);
+    this.rawMessageByKey.set(`${chatId}:${id}`, msg);
     this.pruneMessageStore();
     this.scheduleSaveMessageStore();
   }
@@ -641,6 +779,47 @@ export class WhatsAppClient {
       return this.extractTextFromAnyMessage(m.ephemeralMessage.message);
     }
     return this.extractTextFromAnyMessage(m);
+  }
+
+  private extractMediaMeta(msg: WAMessage): WhatsAppMedia | undefined {
+    const content = normalizeMessageContent(msg.message) as any;
+    return this.extractMediaMetaFromContent(content);
+  }
+
+  private extractMediaMetaFromContent(content: any): WhatsAppMedia | undefined {
+    if (!content) return undefined;
+    const ctype = getContentType(content) as string | undefined;
+    if (!ctype) return undefined;
+
+    const mediaType = ctype.replace(/Message$/, "");
+    const m = (content as any)[ctype];
+    if (!m || typeof m !== "object") return undefined;
+
+    const kind: WhatsAppMedia["kind"] = (
+      mediaType === "image" ||
+      mediaType === "video" ||
+      mediaType === "document" ||
+      mediaType === "audio" ||
+      mediaType === "sticker"
+    ) ? mediaType : "unknown";
+
+    const fileLength = this.toNumberSafe(m.fileLength);
+    const seconds = this.toNumberSafe(m.seconds);
+    const mimetype = typeof m.mimetype === "string" ? m.mimetype : undefined;
+    const fileName = typeof m.fileName === "string" ? m.fileName : undefined;
+    const isVoiceNote = kind === "audio" ? Boolean(m.ptt) : undefined;
+
+    // Only treat as "media" if it's a known media message shape.
+    if (kind === "unknown") return undefined;
+
+    return {
+      kind,
+      mimetype,
+      fileName,
+      fileLength,
+      seconds,
+      isVoiceNote,
+    };
   }
 
   private extractTextFromAnyMessage(m: any): { text: string; type: string } {
@@ -662,6 +841,22 @@ export class WhatsAppClient {
     if (typeof m.documentMessage?.caption === "string") {
       return { text: m.documentMessage.caption, type: "document" };
     }
+    if (m.documentMessage && typeof m.documentMessage?.fileName === "string") {
+      return { text: `[document: ${m.documentMessage.fileName}]`, type: "document" };
+    }
+    if (m.audioMessage) {
+      const isVoice = Boolean(m.audioMessage?.ptt);
+      return { text: isVoice ? "[voice-note]" : "[audio]", type: "audio" };
+    }
+    if (m.imageMessage) {
+      return { text: "[image]", type: "image" };
+    }
+    if (m.videoMessage) {
+      return { text: "[video]", type: "video" };
+    }
+    if (m.stickerMessage) {
+      return { text: "[sticker]", type: "sticker" };
+    }
     if (typeof m.buttonsResponseMessage?.selectedDisplayText === "string") {
       return { text: m.buttonsResponseMessage.selectedDisplayText, type: "buttons_response" };
     }
@@ -670,6 +865,23 @@ export class WhatsAppClient {
     }
 
     return { text: `[${type}]`, type };
+  }
+
+  private toNumberSafe(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "bigint") return Number(value);
+    if (value && typeof value === "object") {
+      const v = value as any;
+      if (typeof v.toNumber === "function") {
+        const n = v.toNumber();
+        if (typeof n === "number" && Number.isFinite(n)) return n;
+      }
+      if (typeof v.toString === "function") {
+        const n = Number(v.toString());
+        if (Number.isFinite(n)) return n;
+      }
+    }
+    return undefined;
   }
 
   private toUnixSeconds(value: unknown): number {
