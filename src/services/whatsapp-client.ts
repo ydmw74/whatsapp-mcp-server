@@ -110,7 +110,8 @@ export class WhatsAppClient {
       logger: logger as any,
       printQRInTerminal: false,
       generateHighQualityLinkPreview: false,
-      syncFullHistory: false,
+      syncFullHistory: true,
+      shouldSyncHistoryMessage: () => true,
     });
 
     this.socket.ev.on("creds.update", saveCreds);
