@@ -19,6 +19,8 @@ import { registerChatsTool } from "./tools/chats.js";
 import { registerSendMessageTool } from "./tools/send-message.js";
 import { registerGroupInfoTool } from "./tools/group-info.js";
 import { registerListMessagesTool } from "./tools/list-messages.js";
+import { registerDownloadMediaTool } from "./tools/download-media.js";
+import { registerSendFileTool } from "./tools/send-file.js";
 
 import * as os from "node:os";
 import * as path from "node:path";
@@ -147,6 +149,8 @@ async function main(): Promise<void> {
   registerSendMessageTool(server, client);
   registerGroupInfoTool(server, client);
   registerListMessagesTool(server, client);
+  registerDownloadMediaTool(server, client);
+  registerSendFileTool(server, client);
 
   // Start WhatsApp connection (runs in background)
   console.error("Starting WhatsApp connection...");

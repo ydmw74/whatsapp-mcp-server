@@ -8,6 +8,8 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 - **`whatsapp_list_chats`** — List available chats and groups with metadata
 - **`whatsapp_list_messages`** — List recent messages from the server's local store (observed while running; optional persistence)
 - **`whatsapp_send_message`** — Send text messages to contacts or groups
+- **`whatsapp_send_file`** — Send files/media (document/image/video/audio/voice note)
+- **`whatsapp_download_media`** — Download attachments (including voice notes) from messages observed by this server
 - **`whatsapp_get_group_info`** — Get group details, participants, and admin info
 
 ## Prerequisites
@@ -74,6 +76,7 @@ claude mcp add whatsapp node /absolute/path/to/whatsapp-mcp-server/dist/index.js
 | Environment Variable | Default | Description |
 |---|---|---|
 | `WHATSAPP_AUTH_DIR` | `~/.whatsapp-mcp/auth` | Directory for session persistence |
+| `WHATSAPP_DEVICE_NAME` | *(unset)* | Optional linked-device label shown in WhatsApp ("Linked devices"), e.g. `WHATSAPP_DEVICE_NAME=MarkusBot-1` (will show like `MarkusBot-1 (Mac OS)` or `... (Ubuntu)`). |
 | `WHATSAPP_RELINK` | *(unset)* | Force re-linking in non-interactive environments. Use `backup` (or `1`/`true`) to move the existing auth dir aside, or `delete` to remove it. |
 | `WHATSAPP_EXIT_AFTER_PAIR` | `auto` | If a QR code was shown in this run, exit automatically after successful pairing. Defaults to enabled only for interactive terminal runs (TTY). |
 | `WHATSAPP_PERSIST_MESSAGES` | `false` | Persist the local message store to disk (`message-store.json`). |
@@ -112,6 +115,7 @@ List recent messages from the server's local message store.
 **Notes:**
 - Only messages observed by the running server are available.
 - To keep messages across restarts, set `WHATSAPP_PERSIST_MESSAGES=1` (stores `message-store.json` next to the auth dir).
+- If a message includes media, the list includes basic media metadata (kind, mimetype, etc.). Use `whatsapp_download_media` to download the attachment.
 
 ### `whatsapp_send_message`
 
@@ -122,6 +126,31 @@ Send a text message.
 - `text` (string) — Message text (max 4096 chars)
 
 **Returns:** Message ID and timestamp.
+
+### `whatsapp_send_file`
+
+Send a file/media message (document/image/video/audio/voice note).
+
+**Parameters:**
+- `chat_id` (string) — Phone number with country code or full JID
+- `path` (string) — Local file path (supports `~/` expansion)
+- `kind` (string, optional) — `document|image|video|audio|voice` (default: `document`)
+- `caption` (string, optional) — Caption (image/video/document)
+- `mimetype` (string, optional) — MIME type override
+- `fileName` (string, optional) — File name override (document only)
+
+**Returns:** Message ID and timestamp.
+
+### `whatsapp_download_media`
+
+Download an attachment (including voice notes) from a message that the server has observed.
+
+**Parameters:**
+- `chat_id` (string) — Chat JID (from `whatsapp_list_messages`)
+- `message_id` (string) — Message ID (from `whatsapp_list_messages`)
+- `output_dir` (string, optional) — Directory to write the file to (supports `~/` expansion)
+
+**Returns:** Absolute file `path` and `media` metadata.
 
 ### `whatsapp_get_group_info`
 
@@ -168,7 +197,7 @@ The server uses **stdio transport** for local MCP communication and **Baileys** 
 ## Limitations
 
 - **Limited message history**: The server lists recent messages that it observed while running (and optionally persisted). It does not fetch arbitrary chat history from WhatsApp.
-- **No media support** (yet): Only text messages are supported currently.
+- **Media downloads are limited to observed messages**: `whatsapp_download_media` can only download media for messages the server has observed since it started (it keeps the raw message in memory for a bounded recent window).
 - **Single session**: Only one WhatsApp account can be linked at a time.
 
 ## Development

@@ -44,8 +44,47 @@ export const ListMessagesInputSchema = z.object({
     .describe("Maximum number of messages to return (1-100, default: 20)"),
 }).strict();
 
+export const DownloadMediaInputSchema = z.object({
+  chat_id: z.string()
+    .min(1)
+    .describe("WhatsApp chat ID (JID). Use the Chat field from whatsapp_list_messages."),
+  message_id: z.string()
+    .min(1)
+    .describe("Message ID within the chat. Use the ID field from whatsapp_list_messages."),
+  output_dir: z.string()
+    .min(1)
+    .optional()
+    .describe("Optional output directory for the downloaded file. Supports '~/' expansion. Default: <authDir>/../downloads"),
+}).strict();
+
+export const SendFileInputSchema = z.object({
+  chat_id: z.string()
+    .min(1)
+    .describe("WhatsApp chat ID (JID) or phone number with country code (e.g., '4915123456789' or '4915123456789@s.whatsapp.net')"),
+  path: z.string()
+    .min(1)
+    .describe("Local file path to send. Supports '~/' expansion. Relative paths are resolved against the current working directory."),
+  kind: z.enum(["document", "image", "video", "audio", "voice"])
+    .optional()
+    .describe("What to send. Use 'voice' for WhatsApp voice notes (ptt). Default: document"),
+  caption: z.string()
+    .max(4096)
+    .optional()
+    .describe("Optional caption (for image/video/document)."),
+  mimetype: z.string()
+    .min(1)
+    .optional()
+    .describe("Optional MIME type override (e.g. 'application/pdf', 'image/png', 'audio/ogg; codecs=opus')."),
+  fileName: z.string()
+    .min(1)
+    .optional()
+    .describe("Optional file name override for documents."),
+}).strict();
+
 export type GetStatusInput = z.infer<typeof GetStatusInputSchema>;
 export type ListChatsInput = z.infer<typeof ListChatsInputSchema>;
 export type SendMessageInput = z.infer<typeof SendMessageInputSchema>;
 export type GetGroupInfoInput = z.infer<typeof GetGroupInfoInputSchema>;
 export type ListMessagesInput = z.infer<typeof ListMessagesInputSchema>;
+export type DownloadMediaInput = z.infer<typeof DownloadMediaInputSchema>;
+export type SendFileInput = z.infer<typeof SendFileInputSchema>;
