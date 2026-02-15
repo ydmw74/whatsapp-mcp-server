@@ -44,6 +44,8 @@ A QR code will appear in your terminal. Scan it with your phone:
 
 After successful pairing, the session is persisted in `~/.whatsapp-mcp/auth`. You won't need to scan again unless you unlink the device.
 
+> Note: To use `whatsapp_list_messages`, keep the server running while messages arrive. The server can only list messages it has observed (and optionally persisted).
+
 ### 3. Configure Your MCP Client
 
 #### Claude Desktop
@@ -106,6 +108,10 @@ List recent messages from the server's local message store.
 - `limit` (number, 1-100, default: 20) — Maximum number of messages to return
 
 **Returns:** A formatted list of messages with timestamp, sender, and text.
+
+**Notes:**
+- Only messages observed by the running server are available.
+- To keep messages across restarts, set `WHATSAPP_PERSIST_MESSAGES=1` (stores `message-store.json` next to the auth dir).
 
 ### `whatsapp_send_message`
 
