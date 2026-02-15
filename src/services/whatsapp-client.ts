@@ -59,7 +59,7 @@ export class WhatsAppClient {
   private _status: ConnectionStatus = { connected: false };
   private qrDisplayed = false;
   private chatStore: Map<string, { id: string; name: string; isGroup: boolean; conversationTimestamp?: number }> = new Map();
-  private reconnecting = false;
+  private reconnectCount440 = 0;
 
   constructor(authDir?: string) {
     this.authDir = authDir || path.join(
@@ -121,7 +121,7 @@ export class WhatsAppClient {
       fs.mkdirSync(this.authDir, { recursive: true });
     }
 
-    // Load persisted chat store
+    // Load persisted chat store on first connect
     if (this.chatStore.size === 0) {
       this.loadChatStore();
     }
@@ -129,22 +129,13 @@ export class WhatsAppClient {
     const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
     const { version } = await fetchLatestBaileysVersion();
 
+    // Create a logger that writes to stderr (stdout is for MCP JSON-RPC)
     const logger = pino(
       { level: "warn" },
       pino.destination({ dest: 2, sync: true })
     );
 
-    // Clean up any previous socket completely
-    if (this.socket) {
-      try {
-        this.socket.end(undefined);
-      } catch (e) {
-        // ignore cleanup errors
-      }
-      this.socket = null;
-    }
-
-    const sock = makeWASocket({
+    this.socket = makeWASocket({
       version,
       auth: {
         creds: state.creds,
@@ -154,211 +145,121 @@ export class WhatsAppClient {
       printQRInTerminal: false,
       generateHighQualityLinkPreview: false,
       syncFullHistory: false,
-      shouldSyncHistoryMessage: () => false,
     });
 
-    this.socket = sock;
-    this.reconnecting = false;
+    this.socket.ev.on("creds.update", saveCreds);
 
-    // Use ev.process() for batched event handling (recommended by Baileys docs)
-    sock.ev.process(async (events) => {
+    this.socket.ev.on("connection.update", (update) => {
+      const { connection, lastDisconnect, qr } = update;
 
-      if (events["creds.update"]) {
-        await saveCreds();
+      if (qr) {
+        this.notifyConnection({
+          connected: false,
+          qrCode: qr,
+        });
+        if (!this.qrDisplayed) {
+          try {
+            import("qrcode-terminal").then((qrTerminal) => {
+              qrTerminal.default.generate(qr, { small: true }, (code: string) => {
+                console.error("\n=== WhatsApp QR Code ===");
+                console.error("Scan this QR code with your phone:");
+                console.error("WhatsApp > Settings > Linked Devices > Link a Device\n");
+                console.error(code);
+                console.error("========================\n");
+              });
+            });
+          } catch {
+            console.error("QR Code (paste into QR reader):", qr);
+          }
+          this.qrDisplayed = true;
+        }
       }
 
-      if (events["connection.update"]) {
-        const update = events["connection.update"];
-        const { connection, lastDisconnect, qr } = update;
+      if (connection === "close") {
+        const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-        if (qr) {
+        if (shouldReconnect) {
+          // Limit reconnect attempts for code 440 (conflict:replaced)
+          if (statusCode === 440) {
+            this.reconnectCount440++;
+            if (this.reconnectCount440 > 2) {
+              console.error("Too many conflict:replaced reconnects (" + this.reconnectCount440 + "), stopping. Will reconnect on next API call.");
+              this.notifyConnection({
+                connected: false,
+                error: "Connection conflict. Restart to reconnect.",
+              });
+              return;
+            }
+          }
+          console.error("Connection closed (code: " + statusCode + "), reconnecting...");
+          this.qrDisplayed = false;
+          this.connect();
+        } else {
           this.notifyConnection({
             connected: false,
-            qrCode: qr,
+            error: "Logged out from WhatsApp. Delete auth directory and re-scan QR code.",
           });
-          if (!this.qrDisplayed) {
-            try {
-              import("qrcode-terminal").then((qrTerminal) => {
-                qrTerminal.default.generate(qr, { small: true }, (code: string) => {
-                  console.error("\n=== WhatsApp QR Code ===");
-                  console.error("Scan this QR code with your phone:");
-                  console.error("WhatsApp > Settings > Linked Devices > Link a Device\n");
-                  console.error(code);
-                  console.error("========================\n");
-                });
-              });
-            } catch {
-              console.error("QR Code (paste into QR reader):", qr);
-            }
-            this.qrDisplayed = true;
-          }
         }
-
-        if (connection === "close") {
-          const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
-          const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-
-          if (shouldReconnect && !this.reconnecting) {
-            this.reconnecting = true;
-
-            // Force-close the old socket to ensure clean disconnect
-            try {
-              sock.end(undefined);
-            } catch (e) {
-              // ignore
-            }
-            if (this.socket === sock) {
-              this.socket = null;
-            }
-
-            const delay = statusCode === 440 ? 8000 : 3000;
-            console.error("Connection closed (code: " + statusCode + "), reconnecting in " + delay + "ms...");
-            this.qrDisplayed = false;
-
-            setTimeout(() => {
-              this.reconnecting = false;
-              this.connect();
-            }, delay);
-          } else if (!shouldReconnect) {
-            this.notifyConnection({
-              connected: false,
-              error: "Logged out from WhatsApp. Delete auth directory and re-scan QR code.",
-            });
-          }
-        } else if (connection === "open") {
-          this.qrDisplayed = false;
-          const phoneNumber = sock.user?.id?.split(":")[0] || "unknown";
-          this.notifyConnection({
-            connected: true,
-            phoneNumber,
-          });
-          console.error("WhatsApp connected as +" + phoneNumber);
-
-          // Try to populate chat store from internal Baileys contacts
-          setTimeout(() => {
-            try {
-              const internalContacts = (sock as any).contacts || {};
-              const contactIds = Object.keys(internalContacts);
-              if (contactIds.length > 0) {
-                for (const id of contactIds) {
-                  if (id.endsWith('@broadcast') || this.chatStore.has(id)) continue;
-                  const c = internalContacts[id];
-                  const name = c.notify || c.name || c.verifiedName || id.split('@')[0];
-                  const isGroup = id.endsWith('@g.us');
-                  this.chatStore.set(id, { id, name, isGroup, conversationTimestamp: 0 });
-                }
-                console.error('Internal contacts loaded: ' + contactIds.length + ' contacts, store has ' + this.chatStore.size + ' entries');
-                this.saveChatStore();
-              } else {
-                console.error('No internal contacts available');
-              }
-            } catch (e) {
-              console.error('Failed to load internal contacts: ' + e);
-            }
-          }, 3000);
-        }
+      } else if (connection === "open") {
+        this.qrDisplayed = false;
+        this.reconnectCount440 = 0;
+        const phoneNumber = this.socket?.user?.id?.split(":")[0] || "unknown";
+        this.notifyConnection({
+          connected: true,
+          phoneNumber,
+        });
+        console.error("WhatsApp connected as +" + phoneNumber);
       }
+    });
 
-      // --- history sync (chats, contacts, messages in bulk) ---
-      if (events["messaging-history.set"]) {
-        const { chats, contacts, messages, isLatest } = events["messaging-history.set"];
-        if (chats) {
-          for (const chat of chats) {
-            if (!chat.id) continue;
-            const id = chat.id;
-            const isGroup = id.endsWith("@g.us");
-            this.chatStore.set(id, {
-              id,
-              name: (chat as any).name || (chat as any).subject || id.split("@")[0],
-              isGroup,
-              conversationTimestamp: (chat as any).conversationTimestamp || 0,
-            });
-          }
+    // Listen for incoming messages to discover individual chats
+    this.socket.ev.on("messages.upsert", ({ messages }) => {
+      let changed = false;
+      for (const msg of messages) {
+        const jid = msg.key.remoteJid;
+        if (!jid || jid === "status@broadcast") continue;
+        const isGroup = jid.endsWith("@g.us");
+        if (!this.chatStore.has(jid)) {
+          const name = isGroup
+            ? (msg.key as any).participant || jid.split("@")[0]
+            : (msg.pushName || jid.split("@")[0]);
+          this.chatStore.set(jid, { id: jid, name, isGroup, conversationTimestamp: 0 });
+          changed = true;
         }
-        if (contacts) {
-          for (const contact of contacts) {
-            if (!contact.id) continue;
-            const id = contact.id;
-            if (id.endsWith("@g.us") || id.endsWith("@broadcast")) continue;
-            const name = (contact as any).notify || (contact as any).name || (contact as any).verifiedName || id.split("@")[0];
-            const existing = this.chatStore.get(id);
-            if (existing) {
-              existing.name = name;
-            } else {
-              this.chatStore.set(id, { id, name, isGroup: false, conversationTimestamp: 0 });
-            }
-          }
+        const entry = this.chatStore.get(jid)!;
+        entry.conversationTimestamp = Math.floor(Date.now() / 1000);
+        if (!isGroup && msg.pushName && entry.name === jid.split("@")[0]) {
+          entry.name = msg.pushName;
+          changed = true;
         }
-        console.error("History sync: " + (chats?.length || 0) + " chats, " + (contacts?.length || 0) + " contacts, store has " + this.chatStore.size + " entries (isLatest: " + isLatest + ")");
+        this.chatStore.set(jid, entry);
+      }
+      if (changed) {
         this.saveChatStore();
       }
+    });
 
-      if (events["chats.upsert"]) {
-        for (const chat of events["chats.upsert"]) {
-          if (!chat.id) continue;
-          const id = chat.id;
-          const isGroup = id.endsWith("@g.us");
-          this.chatStore.set(id, {
-            id,
-            name: (chat as any).name || (chat as any).subject || id.split("@")[0],
-            isGroup,
-            conversationTimestamp: (chat as any).conversationTimestamp || 0,
-          });
+    // Listen for contacts to get names for individual chats
+    this.socket.ev.on("contacts.upsert", (contacts) => {
+      let changed = false;
+      for (const contact of contacts) {
+        if (!contact.id) continue;
+        const id = contact.id;
+        if (id.endsWith("@g.us") || id.endsWith("@broadcast")) continue;
+        const name = (contact as any).notify || (contact as any).name || (contact as any).verifiedName || id.split("@")[0];
+        const existing = this.chatStore.get(id);
+        if (existing) {
+          existing.name = name;
+          this.chatStore.set(id, existing);
+        } else {
+          this.chatStore.set(id, { id, name, isGroup: false, conversationTimestamp: 0 });
         }
+        changed = true;
       }
-
-      if (events["chats.update"]) {
-        for (const update of events["chats.update"]) {
-          if (!update.id) continue;
-          const existing = this.chatStore.get(update.id);
-          if (existing) {
-            if ((update as any).name) existing.name = (update as any).name;
-            if ((update as any).subject) existing.name = (update as any).subject;
-            if ((update as any).conversationTimestamp) {
-              existing.conversationTimestamp = (update as any).conversationTimestamp;
-            }
-            this.chatStore.set(update.id, existing);
-          }
-        }
-      }
-
-      if (events["contacts.upsert"]) {
-        for (const contact of events["contacts.upsert"]) {
-          if (!contact.id) continue;
-          const id = contact.id;
-          if (id.endsWith("@g.us") || id.endsWith("@broadcast")) continue;
-          const existing = this.chatStore.get(id);
-          const name = (contact as any).notify || (contact as any).name || (contact as any).verifiedName || id.split("@")[0];
-          if (existing) {
-            existing.name = name;
-            this.chatStore.set(id, existing);
-          } else {
-            this.chatStore.set(id, { id, name, isGroup: false, conversationTimestamp: 0 });
-          }
-        }
+      if (changed) {
         console.error("Contacts updated, chat store now has " + this.chatStore.size + " entries");
         this.saveChatStore();
-      }
-
-      if (events["messages.upsert"]) {
-        const upsert = events["messages.upsert"];
-        for (const msg of upsert.messages) {
-          const jid = msg.key.remoteJid;
-          if (!jid || jid === "status@broadcast") continue;
-          const isGroup = jid.endsWith("@g.us");
-          if (!this.chatStore.has(jid)) {
-            const name = isGroup
-              ? (msg.key as any).participant || jid.split("@")[0]
-              : (msg.pushName || jid.split("@")[0]);
-            this.chatStore.set(jid, { id: jid, name, isGroup, conversationTimestamp: 0 });
-          }
-          const entry = this.chatStore.get(jid)!;
-          entry.conversationTimestamp = Math.floor(Date.now() / 1000);
-          if (!isGroup && msg.pushName && entry.name === jid.split("@")[0]) {
-            entry.name = msg.pushName;
-          }
-          this.chatStore.set(jid, entry);
-        }
       }
     });
   }
@@ -430,9 +331,7 @@ export class WhatsAppClient {
   ): Promise<{ id: string; timestamp: number }> {
     const sock = this.ensureConnected();
     const normalizedId = this.normalizeJid(chatId);
-
     const result = await sock.sendMessage(normalizedId, { text });
-
     return {
       id: result?.key?.id || "unknown",
       timestamp: result?.messageTimestamp as number || Math.floor(Date.now() / 1000),
@@ -441,7 +340,6 @@ export class WhatsAppClient {
 
   async getContactName(jid: string): Promise<string> {
     if (!this.socket) return jid;
-
     try {
       const contact = (this.socket as any).contacts?.[jid];
       if (contact?.name) return contact.name;
@@ -450,7 +348,6 @@ export class WhatsAppClient {
     } catch {
       // Fall through
     }
-
     const phone = jid.split("@")[0].split(":")[0];
     return "+" + phone;
   }
@@ -475,9 +372,7 @@ export class WhatsAppClient {
   }> {
     const sock = this.ensureConnected();
     const normalizedId = this.normalizeJid(groupId);
-
     const metadata = await sock.groupMetadata(normalizedId);
-
     return {
       id: metadata.id,
       subject: metadata.subject,
@@ -492,14 +387,11 @@ export class WhatsAppClient {
 
   private normalizeJid(input: string): string {
     let jid = input.replace(/^whatsapp:/gi, "");
-
     if (jid.includes("@")) return jid;
-
     const cleaned = jid.replace(/[^0-9]/g, "");
     if (cleaned.length > 0) {
       return cleaned + "@s.whatsapp.net";
     }
-
     return jid;
   }
 
