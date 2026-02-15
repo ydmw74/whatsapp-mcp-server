@@ -110,8 +110,7 @@ export class WhatsAppClient {
       logger: logger as any,
       printQRInTerminal: false,
       generateHighQualityLinkPreview: false,
-      syncFullHistory: true,
-      shouldSyncHistoryMessage: () => true,
+      syncFullHistory: false,
     });
 
     this.socket.ev.on("creds.update", saveCreds);
@@ -233,19 +232,43 @@ export class WhatsAppClient {
   }
 
   async getChats(limit: number = 20): Promise<WhatsAppChat[]> {
-    this.ensureConnected();
+    const sock = this.ensureConnected();
 
-    // Return chats from the in-memory store (populated via events)
-    const allChats = Array.from(this.chatStore.values())
-      .sort((a, b) => (b.conversationTimestamp || 0) - (a.conversationTimestamp || 0))
-      .slice(0, limit);
+    if (this.chatStore.size > 0) {
+      const allChats = Array.from(this.chatStore.values())
+        .sort((a, b) => (b.conversationTimestamp || 0) - (a.conversationTimestamp || 0))
+        .slice(0, limit);
+      console.error(`Returning ${this.chatStore.size} chats from store`);
+      return allChats.map((chat) => ({
+        id: chat.id,
+        name: chat.name || chat.id.split("@")[0],
+        isGroup: chat.isGroup,
+        unreadCount: 0,
+      }));
+    }
 
-    return allChats.map((chat) => ({
-      id: chat.id,
-      name: chat.name || chat.id.split("@")[0],
-      isGroup: chat.isGroup,
-      unreadCount: 0,
-    }));
+    console.error("Chat store empty, fallback to groupFetchAllParticipating (10s timeout)...");
+    try {
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("timeout")), 10000)
+      );
+      const conversations = await Promise.race([
+        sock.groupFetchAllParticipating(),
+        timeoutPromise,
+      ]);
+      const chats: WhatsAppChat[] = [];
+      for (const [id, group] of Object.entries(conversations)) {
+        if (chats.length >= limit) break;
+        const chat = { id, name: (group as any).subject || id.split("@")[0], isGroup: true, unreadCount: 0 };
+        chats.push(chat);
+        this.chatStore.set(id, { id, name: chat.name, isGroup: true, conversationTimestamp: 0 });
+      }
+      console.error(`Fallback returned ${chats.length} group chats`);
+      return chats;
+    } catch (e) {
+      console.error(`Fallback failed: ${e}`);
+      return [];
+    }
   }
 
   async sendMessage(
