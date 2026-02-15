@@ -4,7 +4,7 @@ Repo: `/Users/markus/whatsapp-mcp-server`
 
 ## Where We Left Off
 
-### Already In `main`
+### In `main` (as of HEAD)
 - Packaging: `prepare`/`prepack` run `npm run build` and `files` whitelist includes `dist/` so installs/publish work even though `dist/` is gitignored.
 - Auth relink flow:
   - Interactive (TTY): prompt to create a new link + backup/delete existing auth dir.
@@ -13,11 +13,6 @@ Repo: `/Users/markus/whatsapp-mcp-server`
 - Local message store + tool:
   - `whatsapp_list_messages`
   - Optional persistence: `WHATSAPP_PERSIST_MESSAGES=1` (stores `message-store.json` near auth dir).
-
-### Current Work (Not Yet Merged): `codex/media-support`
-Branch: `codex/media-support`
-
-Adds:
 - Pairing device label UX:
   - When **not paired yet** (`creds.json` missing) and running in a **TTY**, the server prompts for a device label with a default.
   - The chosen label is passed via `WHATSAPP_DEVICE_NAME` to Baileys so WhatsApp shows something like: `<label> (Mac OS)` / `<label> (Ubuntu)`.
@@ -30,9 +25,9 @@ Adds:
   - Inbound: detected as `audio` with `isVoiceNote=true`.
   - Outbound: send with `kind=voice` (sends as PTT/voice note).
 
-PR (create/open): https://github.com/ydmw74/whatsapp-mcp-server/pull/new/codex/media-support
+Media support was merged via PR #4: https://github.com/ydmw74/whatsapp-mcp-server/pull/4
 
-## Files Changed On `codex/media-support`
+## Code Pointers (Media/Label)
 - `src/index.ts`: prompts device label for initial pairing (TTY only).
 - `src/services/whatsapp-client.ts`:
   - `WHATSAPP_DEVICE_NAME` support via Baileys `browser` config.
@@ -45,17 +40,16 @@ PR (create/open): https://github.com/ydmw74/whatsapp-mcp-server/pull/new/codex/m
 
 ## How To Continue Next Time
 
-1. Continue on the branch:
+1. Update local checkout:
 ```bash
 cd /Users/markus/whatsapp-mcp-server
-git checkout codex/media-support
+git checkout main
+git pull
 npm install
 npm run build
 ```
 
-2. Create PR + merge `codex/media-support` into `main` (see link above).
-
-3. After merge, restart the MCP client process (Codex/Claude Desktop) so tool definitions refresh.
+2. Restart the MCP client process (Codex/Claude Desktop) so tool definitions refresh (if you just updated code).
 
 ## Quick Manual Tests
 
@@ -80,4 +74,3 @@ It should prompt for `Device label (...)` before showing the QR code.
 - No automatic audio transcoding: for `kind=voice` you should send a compatible file (typically OGG/Opus).
 - MCP config (Codex) was adjusted to run via `node` (because `dist/index.js` is not necessarily executable):
   - `~/.codex/config.toml` uses `command="node"` and `args=["/Users/markus/whatsapp-mcp-server/dist/index.js"]`.
-
