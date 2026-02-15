@@ -31,7 +31,21 @@ export const GetGroupInfoInputSchema = z.object({
     .describe("WhatsApp group JID (e.g., '120363012345678901@g.us')"),
 }).strict();
 
+export const ListMessagesInputSchema = z.object({
+  chat_id: z.string()
+    .min(1)
+    .optional()
+    .describe("Optional: WhatsApp chat ID (JID) to list messages from. If omitted, lists recent messages across all chats in the local store."),
+  limit: z.number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(20)
+    .describe("Maximum number of messages to return (1-100, default: 20)"),
+}).strict();
+
 export type GetStatusInput = z.infer<typeof GetStatusInputSchema>;
 export type ListChatsInput = z.infer<typeof ListChatsInputSchema>;
 export type SendMessageInput = z.infer<typeof SendMessageInputSchema>;
 export type GetGroupInfoInput = z.infer<typeof GetGroupInfoInputSchema>;
+export type ListMessagesInput = z.infer<typeof ListMessagesInputSchema>;

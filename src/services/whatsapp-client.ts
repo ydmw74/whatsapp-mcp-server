@@ -53,15 +53,23 @@ export interface ConnectionStatus {
 
 type ConnectionCallback = (status: ConnectionStatus) => void;
 
+type StoredMessage = Omit<WhatsAppMessage, "chatName">;
+
 export class WhatsAppClient {
   private socket: WASocket | null = null;
   private authDir: string;
+  private persistMessages: boolean;
+  private maxMessagesPerChat: number;
+  private maxMessagesTotal: number;
   private connectionCallbacks: ConnectionCallback[] = [];
   private _status: ConnectionStatus = { connected: false };
   private qrDisplayed = false;
   private chatStore: Map<string, { id: string; name: string; isGroup: boolean; conversationTimestamp?: number }> = new Map();
   private saveChatStoreTimer: NodeJS.Timeout | null = null;
   private saveChatStoreInFlight: Promise<void> = Promise.resolve();
+  private messageStore: Map<string, StoredMessage[]> = new Map();
+  private saveMessageStoreTimer: NodeJS.Timeout | null = null;
+  private saveMessageStoreInFlight: Promise<void> = Promise.resolve();
   private reconnectCount440 = 0;
   private socketGeneration = 0;
   private groupMetadataInFlight: Set<string> = new Set();
@@ -73,6 +81,11 @@ export class WhatsAppClient {
     // Prefer explicit argument; then env var; then user's home dir. Avoid "~" which Node won't expand.
     const baseDir = process.env.WHATSAPP_AUTH_DIR || path.join(os.homedir(), ".whatsapp-mcp");
     this.authDir = resolvedAuthDir || path.join(baseDir, "auth");
+
+    const persistRaw = (process.env.WHATSAPP_PERSIST_MESSAGES || "").trim().toLowerCase();
+    this.persistMessages = persistRaw === "1" || persistRaw === "true" || persistRaw === "yes" || persistRaw === "y";
+    this.maxMessagesPerChat = Number(process.env.WHATSAPP_MAX_MESSAGES_PER_CHAT || "200");
+    this.maxMessagesTotal = Number(process.env.WHATSAPP_MAX_MESSAGES_TOTAL || "2000");
   }
 
   get status(): ConnectionStatus {
@@ -98,6 +111,10 @@ export class WhatsAppClient {
     return path.join(this.authDir, '..', 'chat-store.json');
   }
 
+  private get messageStoreFile(): string {
+    return path.join(this.authDir, "..", "message-store.json");
+  }
+
   private loadChatStore(): void {
     try {
       const file = this.chatStoreFile;
@@ -110,6 +127,27 @@ export class WhatsAppClient {
       }
     } catch (e) {
       console.error('Failed to load chat store: ' + e);
+    }
+  }
+
+  private loadMessageStore(): void {
+    if (!this.persistMessages) return;
+    try {
+      const file = this.messageStoreFile;
+      if (!fs.existsSync(file)) return;
+      const data = JSON.parse(fs.readFileSync(file, "utf-8"));
+      if (!Array.isArray(data)) return;
+      for (const entry of data) {
+        const chatId = entry?.chatId;
+        if (!chatId || typeof chatId !== "string") continue;
+        const list = this.messageStore.get(chatId) || [];
+        list.push(entry as StoredMessage);
+        this.messageStore.set(chatId, list);
+      }
+      this.pruneMessageStore();
+      console.error("Loaded message store (" + this.countMessages() + " messages) from persistent store");
+    } catch (e) {
+      console.error("Failed to load message store: " + e);
     }
   }
 
@@ -145,6 +183,38 @@ export class WhatsAppClient {
     return this.saveChatStoreInFlight;
   }
 
+  private scheduleSaveMessageStore(): void {
+    if (!this.persistMessages) return;
+    if (this.saveMessageStoreTimer) return;
+    this.saveMessageStoreTimer = setTimeout(() => {
+      this.saveMessageStoreTimer = null;
+      void this.saveMessageStoreAsync();
+    }, 500);
+  }
+
+  private saveMessageStoreAsync(): Promise<void> {
+    if (!this.persistMessages) return Promise.resolve();
+    const file = this.messageStoreFile;
+    const payload = JSON.stringify(this.flattenMessageStore(), null, 2);
+
+    this.saveMessageStoreInFlight = this.saveMessageStoreInFlight
+      .catch(() => {
+        // Keep the chain alive even if a previous write failed.
+      })
+      .then(async () => {
+        try {
+          await fs.promises.mkdir(path.dirname(file), { recursive: true });
+          const tmp = file + ".tmp";
+          await fs.promises.writeFile(tmp, payload, "utf-8");
+          await fs.promises.rename(tmp, file);
+        } catch (e) {
+          console.error("Failed to save message store: " + e);
+        }
+      });
+
+    return this.saveMessageStoreInFlight;
+  }
+
   async connect(): Promise<void> {
     try {
       if (!fs.existsSync(this.authDir)) {
@@ -154,6 +224,9 @@ export class WhatsAppClient {
       // Load persisted chat store on first connect
       if (this.chatStore.size === 0) {
         this.loadChatStore();
+      }
+      if (this.messageStore.size === 0) {
+        this.loadMessageStore();
       }
 
       const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
@@ -294,6 +367,8 @@ export class WhatsAppClient {
         if (isGroup) {
           this.maybeUpdateGroupSubject(jid);
         }
+
+        this.addToMessageStore(msg);
       }
       if (changed) {
         this.scheduleSaveChatStore();
@@ -405,6 +480,23 @@ export class WhatsAppClient {
     };
   }
 
+  async listMessages(chatId?: string, limit: number = 20): Promise<WhatsAppMessage[]> {
+    const normalized = chatId ? this.normalizeJid(chatId) : undefined;
+    const messages = normalized
+      ? (this.messageStore.get(normalized) || [])
+      : this.flattenMessageStore();
+
+    const slice = messages
+      .slice()
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    const tail = slice.slice(Math.max(0, slice.length - limit));
+    return tail.map((m) => ({
+      ...m,
+      chatName: this.chatStore.get(m.chatId)?.name || m.chatId.split("@")[0],
+    }));
+  }
+
   async getContactName(jid: string): Promise<string> {
     if (!this.socket) return jid;
     const normalized = this.normalizeJid(jid);
@@ -430,7 +522,7 @@ export class WhatsAppClient {
   ): Promise<WhatsAppMessage[]> {
     throw new Error(
       "Message search requires a message store implementation. " +
-      "This server currently only supports listing chats and sending messages."
+      "Use whatsapp_list_messages to browse recent messages observed by this server."
     );
   }
 
@@ -464,6 +556,120 @@ export class WhatsAppClient {
       return cleaned + "@s.whatsapp.net";
     }
     return jid;
+  }
+
+  private countMessages(): number {
+    let n = 0;
+    for (const list of this.messageStore.values()) n += list.length;
+    return n;
+  }
+
+  private flattenMessageStore(): StoredMessage[] {
+    const all: StoredMessage[] = [];
+    for (const list of this.messageStore.values()) {
+      all.push(...list);
+    }
+    return all;
+  }
+
+  private pruneMessageStore(): void {
+    // Enforce per-chat limit
+    for (const [chatId, list] of this.messageStore.entries()) {
+      if (list.length <= this.maxMessagesPerChat) continue;
+      const sorted = list.slice().sort((a, b) => a.timestamp - b.timestamp);
+      this.messageStore.set(chatId, sorted.slice(Math.max(0, sorted.length - this.maxMessagesPerChat)));
+    }
+
+    // Enforce global limit
+    const total = this.countMessages();
+    if (total <= this.maxMessagesTotal) return;
+    const all = this.flattenMessageStore().sort((a, b) => a.timestamp - b.timestamp);
+    const keep = all.slice(Math.max(0, all.length - this.maxMessagesTotal));
+    this.messageStore.clear();
+    for (const msg of keep) {
+      const list = this.messageStore.get(msg.chatId) || [];
+      list.push(msg);
+      this.messageStore.set(msg.chatId, list);
+    }
+  }
+
+  private addToMessageStore(msg: WAMessage): void {
+    const chatId = msg.key.remoteJid;
+    if (!chatId) return;
+
+    const id = msg.key.id || "unknown";
+    const isFromMe = Boolean(msg.key.fromMe);
+    const isGroup = chatId.endsWith("@g.us");
+    const timestamp = this.toUnixSeconds((msg as any).messageTimestamp);
+
+    const sender = isFromMe
+      ? "me"
+      : (msg.key.participant || chatId);
+
+    const senderName = (msg.pushName || "").trim() || sender.split("@")[0];
+    const { text, type } = this.extractTextAndType(msg);
+
+    const stored: StoredMessage = {
+      id,
+      chatId,
+      sender,
+      senderName,
+      timestamp,
+      text,
+      isFromMe,
+      isGroup,
+      type,
+    };
+
+    const list = this.messageStore.get(chatId) || [];
+    list.push(stored);
+    this.messageStore.set(chatId, list);
+    this.pruneMessageStore();
+    this.scheduleSaveMessageStore();
+  }
+
+  private extractTextAndType(msg: WAMessage): { text: string; type: string } {
+    const m: any = (msg as any).message;
+    if (!m) {
+      const stub = (msg as any).messageStubType;
+      if (stub !== undefined) return { text: `[stub:${stub}]`, type: "stub" };
+      return { text: "[no-content]", type: "unknown" };
+    }
+
+    // Ephemeral messages wrap the actual message payload.
+    if (m.ephemeralMessage?.message) {
+      return this.extractTextFromAnyMessage(m.ephemeralMessage.message);
+    }
+    return this.extractTextFromAnyMessage(m);
+  }
+
+  private extractTextFromAnyMessage(m: any): { text: string; type: string } {
+    const keys = Object.keys(m || {});
+    const type = keys[0] || "unknown";
+
+    if (typeof m.conversation === "string") {
+      return { text: m.conversation, type: "text" };
+    }
+    if (typeof m.extendedTextMessage?.text === "string") {
+      return { text: m.extendedTextMessage.text, type: "text" };
+    }
+    if (typeof m.imageMessage?.caption === "string") {
+      return { text: m.imageMessage.caption, type: "image" };
+    }
+    if (typeof m.videoMessage?.caption === "string") {
+      return { text: m.videoMessage.caption, type: "video" };
+    }
+    if (typeof m.documentMessage?.caption === "string") {
+      return { text: m.documentMessage.caption, type: "document" };
+    }
+    if (typeof m.buttonsResponseMessage?.selectedDisplayText === "string") {
+      return { text: m.buttonsResponseMessage.selectedDisplayText, type: "buttons_response" };
+    }
+    if (typeof m.listResponseMessage?.singleSelectReply?.selectedRowId === "string") {
+      return { text: m.listResponseMessage.singleSelectReply.selectedRowId, type: "list_response" };
+    }
+
+    return { text: `[${type}]`, type };
   }
 
   private toUnixSeconds(value: unknown): number {

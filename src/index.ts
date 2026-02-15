@@ -18,6 +18,7 @@ import { registerStatusTool } from "./tools/status.js";
 import { registerChatsTool } from "./tools/chats.js";
 import { registerSendMessageTool } from "./tools/send-message.js";
 import { registerGroupInfoTool } from "./tools/group-info.js";
+import { registerListMessagesTool } from "./tools/list-messages.js";
 
 import * as os from "node:os";
 import * as path from "node:path";
@@ -106,11 +107,33 @@ async function maybeRelinkAuthDir(authDir: string): Promise<void> {
   }
 }
 
+function shouldExitAfterPair(): boolean {
+  const raw = (process.env.WHATSAPP_EXIT_AFTER_PAIR || "").trim().toLowerCase();
+  if (raw === "1" || raw === "true" || raw === "yes" || raw === "y") return true;
+  if (raw === "0" || raw === "false" || raw === "no" || raw === "n") return false;
+  // Default: only for manual runs in a real terminal; never for stdio-spawned MCP clients.
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
 async function main(): Promise<void> {
   // Initialize WhatsApp client
   const authDir = resolveAuthDir();
   await maybeRelinkAuthDir(authDir);
   const client = new WhatsAppClient(authDir);
+  const exitAfterPair = shouldExitAfterPair();
+  let sawQrThisRun = false;
+  let exitScheduled = false;
+
+  client.onConnection((status) => {
+    if (status.qrCode) {
+      sawQrThisRun = true;
+    }
+    if (exitAfterPair && sawQrThisRun && status.connected && !exitScheduled) {
+      exitScheduled = true;
+      console.error("WhatsApp pairing complete. Exiting (session saved).");
+      setTimeout(() => process.exit(0), 1000);
+    }
+  });
 
   // Create MCP server
   const server = new McpServer({
@@ -123,6 +146,7 @@ async function main(): Promise<void> {
   registerChatsTool(server, client);
   registerSendMessageTool(server, client);
   registerGroupInfoTool(server, client);
+  registerListMessagesTool(server, client);
 
   // Start WhatsApp connection (runs in background)
   console.error("Starting WhatsApp connection...");
