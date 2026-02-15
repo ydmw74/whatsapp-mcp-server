@@ -87,9 +87,43 @@ export class WhatsAppClient {
     }
   }
 
+  private get chatStoreFile(): string {
+    return path.join(this.authDir, '..', 'chat-store.json');
+  }
+
+  private loadChatStore(): void {
+    try {
+      const file = this.chatStoreFile;
+      if (fs.existsSync(file)) {
+        const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+        for (const entry of data) {
+          this.chatStore.set(entry.id, entry);
+        }
+        console.error('Loaded ' + this.chatStore.size + ' chats from persistent store');
+      }
+    } catch (e) {
+      console.error('Failed to load chat store: ' + e);
+    }
+  }
+
+  private saveChatStore(): void {
+    try {
+      const file = this.chatStoreFile;
+      const data = Array.from(this.chatStore.values());
+      fs.writeFileSync(file, JSON.stringify(data, null, 2));
+    } catch (e) {
+      console.error('Failed to save chat store: ' + e);
+    }
+  }
+
   async connect(): Promise<void> {
     if (!fs.existsSync(this.authDir)) {
       fs.mkdirSync(this.authDir, { recursive: true });
+    }
+
+    // Load persisted chat store
+    if (this.chatStore.size === 0) {
+      this.loadChatStore();
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
@@ -120,7 +154,7 @@ export class WhatsAppClient {
       printQRInTerminal: false,
       generateHighQualityLinkPreview: false,
       syncFullHistory: false,
-      shouldSyncHistoryMessage: () => true,
+      shouldSyncHistoryMessage: () => false,
     });
 
     this.socket = sock;
@@ -199,6 +233,29 @@ export class WhatsAppClient {
             phoneNumber,
           });
           console.error("WhatsApp connected as +" + phoneNumber);
+
+          // Try to populate chat store from internal Baileys contacts
+          setTimeout(() => {
+            try {
+              const internalContacts = (sock as any).contacts || {};
+              const contactIds = Object.keys(internalContacts);
+              if (contactIds.length > 0) {
+                for (const id of contactIds) {
+                  if (id.endsWith('@broadcast') || this.chatStore.has(id)) continue;
+                  const c = internalContacts[id];
+                  const name = c.notify || c.name || c.verifiedName || id.split('@')[0];
+                  const isGroup = id.endsWith('@g.us');
+                  this.chatStore.set(id, { id, name, isGroup, conversationTimestamp: 0 });
+                }
+                console.error('Internal contacts loaded: ' + contactIds.length + ' contacts, store has ' + this.chatStore.size + ' entries');
+                this.saveChatStore();
+              } else {
+                console.error('No internal contacts available');
+              }
+            } catch (e) {
+              console.error('Failed to load internal contacts: ' + e);
+            }
+          }, 3000);
         }
       }
 
@@ -233,6 +290,7 @@ export class WhatsAppClient {
           }
         }
         console.error("History sync: " + (chats?.length || 0) + " chats, " + (contacts?.length || 0) + " contacts, store has " + this.chatStore.size + " entries (isLatest: " + isLatest + ")");
+        this.saveChatStore();
       }
 
       if (events["chats.upsert"]) {
@@ -279,6 +337,7 @@ export class WhatsAppClient {
           }
         }
         console.error("Contacts updated, chat store now has " + this.chatStore.size + " entries");
+        this.saveChatStore();
       }
 
       if (events["messages.upsert"]) {
@@ -357,6 +416,7 @@ export class WhatsAppClient {
       }
 
       console.error("Fallback returned " + chats.length + " group chats");
+      this.saveChatStore();
       return chats;
     } catch (e) {
       console.error("Fallback failed: " + e);
