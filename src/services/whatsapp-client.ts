@@ -212,6 +212,45 @@ export class WhatsAppClient {
         }
       }
     });
+
+    // Track contacts for individual chat names
+    this.socket.ev.on("contacts.upsert", (contacts) => {
+      for (const contact of contacts) {
+        if (!contact.id) continue;
+        const id = contact.id;
+        if (id.endsWith("@g.us") || id.endsWith("@broadcast")) continue;
+        const existing = this.chatStore.get(id);
+        const name = (contact as any).notify || (contact as any).name || (contact as any).verifiedName || id.split("@")[0];
+        if (existing) {
+          existing.name = name;
+          this.chatStore.set(id, existing);
+        } else {
+          this.chatStore.set(id, { id, name, isGroup: false, conversationTimestamp: 0 });
+        }
+      }
+      console.error(`Contacts updated, chat store now has ${this.chatStore.size} entries`);
+    });
+
+    // Track individual chats from incoming/outgoing messages
+    this.socket.ev.on("messages.upsert", ({ messages }) => {
+      for (const msg of messages) {
+        const jid = msg.key.remoteJid;
+        if (!jid || jid === "status@broadcast") continue;
+        const isGroup = jid.endsWith("@g.us");
+        if (!this.chatStore.has(jid)) {
+          const name = isGroup
+            ? (msg.key as any).participant || jid.split("@")[0]
+            : (msg.pushName || jid.split("@")[0]);
+          this.chatStore.set(jid, { id: jid, name, isGroup, conversationTimestamp: 0 });
+        }
+        const entry = this.chatStore.get(jid)!;
+        entry.conversationTimestamp = Math.floor(Date.now() / 1000);
+        if (!isGroup && msg.pushName && entry.name === jid.split("@")[0]) {
+          entry.name = msg.pushName;
+        }
+        this.chatStore.set(jid, entry);
+      }
+    });
   }
 
   async disconnect(): Promise<void> {
