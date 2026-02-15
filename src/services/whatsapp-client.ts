@@ -17,6 +17,7 @@ import makeWASocket, {
   jidNormalizedUser,
 } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
+import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 import pino from "pino";
@@ -59,14 +60,19 @@ export class WhatsAppClient {
   private _status: ConnectionStatus = { connected: false };
   private qrDisplayed = false;
   private chatStore: Map<string, { id: string; name: string; isGroup: boolean; conversationTimestamp?: number }> = new Map();
+  private saveChatStoreTimer: NodeJS.Timeout | null = null;
+  private saveChatStoreInFlight: Promise<void> = Promise.resolve();
   private reconnectCount440 = 0;
   private socketGeneration = 0;
+  private groupMetadataInFlight: Set<string> = new Set();
 
   constructor(authDir?: string) {
-    this.authDir = authDir || path.join(
-      process.env.WHATSAPP_AUTH_DIR || path.join(process.env.HOME || "~", ".whatsapp-mcp"),
-      "auth"
-    );
+    const resolvedAuthDir = authDir?.startsWith("~/")
+      ? path.join(os.homedir(), authDir.slice(2))
+      : authDir;
+    // Prefer explicit argument; then env var; then user's home dir. Avoid "~" which Node won't expand.
+    const baseDir = process.env.WHATSAPP_AUTH_DIR || path.join(os.homedir(), ".whatsapp-mcp");
+    this.authDir = resolvedAuthDir || path.join(baseDir, "auth");
   }
 
   get status(): ConnectionStatus {
@@ -107,54 +113,82 @@ export class WhatsAppClient {
     }
   }
 
-  private saveChatStore(): void {
-    try {
-      const file = this.chatStoreFile;
-      const data = Array.from(this.chatStore.values());
-      fs.writeFileSync(file, JSON.stringify(data, null, 2));
-    } catch (e) {
-      console.error('Failed to save chat store: ' + e);
-    }
+  private scheduleSaveChatStore(): void {
+    if (this.saveChatStoreTimer) return;
+    this.saveChatStoreTimer = setTimeout(() => {
+      this.saveChatStoreTimer = null;
+      void this.saveChatStoreAsync();
+    }, 250);
+  }
+
+  private saveChatStoreAsync(): Promise<void> {
+    const file = this.chatStoreFile;
+    const data = Array.from(this.chatStore.values());
+    const payload = JSON.stringify(data, null, 2);
+
+    // Serialize writes to avoid partial overwrites if multiple writes race.
+    this.saveChatStoreInFlight = this.saveChatStoreInFlight
+      .catch(() => {
+        // Keep the chain alive even if a previous write failed.
+      })
+      .then(async () => {
+        try {
+          await fs.promises.mkdir(path.dirname(file), { recursive: true });
+          const tmp = file + ".tmp";
+          await fs.promises.writeFile(tmp, payload, "utf-8");
+          await fs.promises.rename(tmp, file);
+        } catch (e) {
+          console.error("Failed to save chat store: " + e);
+        }
+      });
+
+    return this.saveChatStoreInFlight;
   }
 
   async connect(): Promise<void> {
-    if (!fs.existsSync(this.authDir)) {
-      fs.mkdirSync(this.authDir, { recursive: true });
-    }
+    try {
+      if (!fs.existsSync(this.authDir)) {
+        fs.mkdirSync(this.authDir, { recursive: true });
+      }
 
-    // Load persisted chat store on first connect
-    if (this.chatStore.size === 0) {
-      this.loadChatStore();
-    }
+      // Load persisted chat store on first connect
+      if (this.chatStore.size === 0) {
+        this.loadChatStore();
+      }
 
-    const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
-    const { version } = await fetchLatestBaileysVersion();
+      const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
+      let version: any | undefined;
+      try {
+        ({ version } = await fetchLatestBaileysVersion());
+      } catch (e) {
+        console.error("Failed to fetch latest Baileys version, continuing with defaults: " + e);
+      }
 
-    // Create a logger that writes to stderr (stdout is for MCP JSON-RPC)
-    const logger = pino(
-      { level: "warn" },
-      pino.destination({ dest: 2, sync: true })
-    );
+      // Create a logger that writes to stderr (stdout is for MCP JSON-RPC)
+      const logger = pino(
+        { level: "warn" },
+        pino.destination({ dest: 2, sync: true })
+      );
 
-    // Each connect() gets a unique generation ID
-    const generation = ++this.socketGeneration;
+      // Each connect() gets a unique generation ID
+      const generation = ++this.socketGeneration;
 
-    this.socket = makeWASocket({
-      version,
-      auth: {
-        creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger as any),
-      },
-      logger: logger as any,
-      printQRInTerminal: false,
-      generateHighQualityLinkPreview: false,
-      syncFullHistory: false,
-    });
+      this.socket = makeWASocket({
+        ...(version ? { version } : {}),
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, logger as any),
+        },
+        logger: logger as any,
+        printQRInTerminal: false,
+        generateHighQualityLinkPreview: false,
+        syncFullHistory: false,
+      });
 
-    this.socket.ev.on("creds.update", saveCreds);
+      this.socket.ev.on("creds.update", saveCreds);
 
-    this.socket.ev.on("connection.update", (update) => {
-      const { connection, lastDisconnect, qr } = update;
+      this.socket.ev.on("connection.update", (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
         this.notifyConnection({
@@ -207,7 +241,9 @@ export class WhatsAppClient {
           this.qrDisplayed = false;
           setTimeout(() => {
             if (generation === this.socketGeneration) {
-              this.connect();
+              void this.connect().catch((e) => {
+                console.error("Reconnect failed:", e);
+              });
             }
           }, delay);
         } else {
@@ -231,19 +267,18 @@ export class WhatsAppClient {
         });
         console.error("WhatsApp connected as +" + phoneNumber);
       }
-    });
+      });
 
     // Listen for incoming messages to discover individual chats
-    this.socket.ev.on("messages.upsert", ({ messages }) => {
+      this.socket.ev.on("messages.upsert", ({ messages }) => {
       let changed = false;
       for (const msg of messages) {
         const jid = msg.key.remoteJid;
         if (!jid || jid === "status@broadcast") continue;
         const isGroup = jid.endsWith("@g.us");
         if (!this.chatStore.has(jid)) {
-          const name = isGroup
-            ? (msg.key as any).participant || jid.split("@")[0]
-            : (msg.pushName || jid.split("@")[0]);
+          // For groups, avoid using "participant" as the chat name (that's a sender JID).
+          const name = isGroup ? jid.split("@")[0] : (msg.pushName || jid.split("@")[0]);
           this.chatStore.set(jid, { id: jid, name, isGroup, conversationTimestamp: 0 });
           changed = true;
         }
@@ -254,14 +289,19 @@ export class WhatsAppClient {
           changed = true;
         }
         this.chatStore.set(jid, entry);
+
+        // Opportunistically enrich group names from metadata (best-effort, non-blocking).
+        if (isGroup) {
+          this.maybeUpdateGroupSubject(jid);
+        }
       }
       if (changed) {
-        this.saveChatStore();
+        this.scheduleSaveChatStore();
       }
-    });
+      });
 
     // Listen for contacts to get names for individual chats
-    this.socket.ev.on("contacts.upsert", (contacts) => {
+      this.socket.ev.on("contacts.upsert", (contacts) => {
       let changed = false;
       for (const contact of contacts) {
         if (!contact.id) continue;
@@ -279,9 +319,16 @@ export class WhatsAppClient {
       }
       if (changed) {
         console.error("Contacts updated, chat store now has " + this.chatStore.size + " entries");
-        this.saveChatStore();
+        this.scheduleSaveChatStore();
       }
-    });
+      });
+    } catch (e) {
+      this.notifyConnection({
+        connected: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      throw e;
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -309,7 +356,7 @@ export class WhatsAppClient {
         .sort((a, b) => (b.conversationTimestamp || 0) - (a.conversationTimestamp || 0))
         .slice(0, limit);
 
-      console.error("Returning " + this.chatStore.size + " chats from store");
+      console.error("Returning " + allChats.length + " chats from store");
       return allChats.map((chat) => ({
         id: chat.id,
         name: chat.name || chat.id.split("@")[0],
@@ -337,7 +384,7 @@ export class WhatsAppClient {
       }
 
       console.error("Fallback returned " + chats.length + " group chats");
-      this.saveChatStore();
+      this.scheduleSaveChatStore();
       return chats;
     } catch (e) {
       console.error("Fallback failed: " + e);
@@ -354,21 +401,25 @@ export class WhatsAppClient {
     const result = await sock.sendMessage(normalizedId, { text });
     return {
       id: result?.key?.id || "unknown",
-      timestamp: result?.messageTimestamp as number || Math.floor(Date.now() / 1000),
+      timestamp: this.toUnixSeconds((result as any)?.messageTimestamp),
     };
   }
 
   async getContactName(jid: string): Promise<string> {
     if (!this.socket) return jid;
+    const normalized = this.normalizeJid(jid);
+    // For groups, prefer the stored chat name if we have it.
+    const fromStore = this.chatStore.get(normalized)?.name || this.chatStore.get(jid)?.name;
+    if (fromStore) return fromStore;
     try {
-      const contact = (this.socket as any).contacts?.[jid];
+      const contact = (this.socket as any).contacts?.[normalized];
       if (contact?.name) return contact.name;
       if (contact?.notify) return contact.notify;
       if (contact?.verifiedName) return contact.verifiedName;
     } catch {
       // Fall through
     }
-    const phone = jid.split("@")[0].split(":")[0];
+    const phone = normalized.split("@")[0].split(":")[0];
     return "+" + phone;
   }
 
@@ -379,7 +430,7 @@ export class WhatsAppClient {
   ): Promise<WhatsAppMessage[]> {
     throw new Error(
       "Message search requires a message store implementation. " +
-      "Consider using whatsapp_list_messages to browse recent messages instead."
+      "This server currently only supports listing chats and sending messages."
     );
   }
 
@@ -413,6 +464,59 @@ export class WhatsAppClient {
       return cleaned + "@s.whatsapp.net";
     }
     return jid;
+  }
+
+  private toUnixSeconds(value: unknown): number {
+    // Baileys / proto timestamps can be number-like or Long-like objects.
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "bigint") return Number(value);
+    if (value && typeof value === "object") {
+      const v = value as any;
+      if (typeof v.toNumber === "function") {
+        const n = v.toNumber();
+        if (typeof n === "number" && Number.isFinite(n)) return n;
+      }
+      if (typeof v.toString === "function") {
+        const n = Number(v.toString());
+        if (Number.isFinite(n)) return n;
+      }
+    }
+    return Math.floor(Date.now() / 1000);
+  }
+
+  private maybeUpdateGroupSubject(groupJid: string): void {
+    if (!this.socket) return;
+    if (this.groupMetadataInFlight.has(groupJid)) return;
+    const existing = this.chatStore.get(groupJid);
+    // If the name is already something other than the placeholder (the group id prefix), keep it.
+    const placeholder = groupJid.split("@")[0];
+    if (existing?.name && existing.name !== placeholder) return;
+
+    this.groupMetadataInFlight.add(groupJid);
+    const sock = this.socket;
+
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("timeout")), 2000)
+    );
+
+    Promise.race([sock.groupMetadata(groupJid), timeout])
+      .then((metadata: any) => {
+        const subject = metadata?.subject;
+        if (!subject) return;
+        const current = this.chatStore.get(groupJid);
+        if (!current) return;
+        if (current.name !== subject) {
+          current.name = subject;
+          this.chatStore.set(groupJid, current);
+          this.scheduleSaveChatStore();
+        }
+      })
+      .catch(() => {
+        // Best-effort only.
+      })
+      .finally(() => {
+        this.groupMetadataInFlight.delete(groupJid);
+      });
   }
 
   formatTimestamp(timestamp: number): string {
