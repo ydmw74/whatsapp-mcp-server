@@ -6,6 +6,7 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 
 - **`whatsapp_get_status`** — Check connection status (connected, waiting for QR, error)
 - **`whatsapp_list_chats`** — List available chats and groups with metadata
+- **`whatsapp_list_messages`** — List recent messages from the server's local store (observed while running; optional persistence)
 - **`whatsapp_send_message`** — Send text messages to contacts or groups
 - **`whatsapp_get_group_info`** — Get group details, participants, and admin info
 
@@ -43,6 +44,8 @@ A QR code will appear in your terminal. Scan it with your phone:
 
 After successful pairing, the session is persisted in `~/.whatsapp-mcp/auth`. You won't need to scan again unless you unlink the device.
 
+> Note: To use `whatsapp_list_messages`, keep the server running while messages arrive. The server can only list messages it has observed (and optionally persisted).
+
 ### 3. Configure Your MCP Client
 
 #### Claude Desktop
@@ -72,6 +75,10 @@ claude mcp add whatsapp node /absolute/path/to/whatsapp-mcp-server/dist/index.js
 |---|---|---|
 | `WHATSAPP_AUTH_DIR` | `~/.whatsapp-mcp/auth` | Directory for session persistence |
 | `WHATSAPP_RELINK` | *(unset)* | Force re-linking in non-interactive environments. Use `backup` (or `1`/`true`) to move the existing auth dir aside, or `delete` to remove it. |
+| `WHATSAPP_EXIT_AFTER_PAIR` | `auto` | If a QR code was shown in this run, exit automatically after successful pairing. Defaults to enabled only for interactive terminal runs (TTY). |
+| `WHATSAPP_PERSIST_MESSAGES` | `false` | Persist the local message store to disk (`message-store.json`). |
+| `WHATSAPP_MAX_MESSAGES_PER_CHAT` | `200` | Retention limit per chat for the local message store. |
+| `WHATSAPP_MAX_MESSAGES_TOTAL` | `2000` | Global retention limit for the local message store. |
 
 ## Tools Reference
 
@@ -91,6 +98,20 @@ List available WhatsApp chats.
 - `limit` (number, 1-100, default: 20) — Maximum chats to return
 
 **Returns:** List of chats with ID, name, type (group/DM), and unread count.
+
+### `whatsapp_list_messages`
+
+List recent messages from the server's local message store.
+
+**Parameters:**
+- `chat_id` (string, optional) — Chat JID (DM or group). If omitted, returns recent messages across all chats.
+- `limit` (number, 1-100, default: 20) — Maximum number of messages to return
+
+**Returns:** A formatted list of messages with timestamp, sender, and text.
+
+**Notes:**
+- Only messages observed by the running server are available.
+- To keep messages across restarts, set `WHATSAPP_PERSIST_MESSAGES=1` (stores `message-store.json` next to the auth dir).
 
 ### `whatsapp_send_message`
 
@@ -140,13 +161,13 @@ The server uses **stdio transport** for local MCP communication and **Baileys** 
 ## Security Considerations
 
 - **Session data** is stored locally in `~/.whatsapp-mcp/auth`. Protect this directory — anyone with access can impersonate your WhatsApp account.
-- **No messages are logged** by the MCP server. Messages flow directly between Baileys and your LLM client.
+- **Messages can be stored locally** in memory for `whatsapp_list_messages` (and optionally persisted to `message-store.json`). Treat stored message data as sensitive.
 - The LLM client should **always confirm with the user** before sending messages via `whatsapp_send_message`.
 - This project uses the unofficial WhatsApp Web protocol. WhatsApp may block accounts that violate their Terms of Service. Use responsibly.
 
 ## Limitations
 
-- **No message history**: Baileys doesn't persist incoming messages by default. The server can list chats and send messages, but browsing message history requires additional store implementation.
+- **Limited message history**: The server lists recent messages that it observed while running (and optionally persisted). It does not fetch arbitrary chat history from WhatsApp.
 - **No media support** (yet): Only text messages are supported currently.
 - **Single session**: Only one WhatsApp account can be linked at a time.
 
