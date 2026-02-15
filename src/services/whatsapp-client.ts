@@ -60,6 +60,7 @@ export class WhatsAppClient {
   private qrDisplayed = false;
   private chatStore: Map<string, { id: string; name: string; isGroup: boolean; conversationTimestamp?: number }> = new Map();
   private reconnectCount440 = 0;
+  private socketGeneration = 0;
 
   constructor(authDir?: string) {
     this.authDir = authDir || path.join(
@@ -135,6 +136,9 @@ export class WhatsAppClient {
       pino.destination({ dest: 2, sync: true })
     );
 
+    // Each connect() gets a unique generation ID
+    const generation = ++this.socketGeneration;
+
     this.socket = makeWASocket({
       version,
       auth: {
@@ -178,6 +182,12 @@ export class WhatsAppClient {
       if (connection === "close") {
         const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+        // Only the current generation should reconnect
+        if (generation !== this.socketGeneration) {
+          console.error('Stale socket (gen ' + generation + ' vs ' + this.socketGeneration + '), ignoring disconnect');
+          return;
+        }
 
         if (shouldReconnect) {
           // Limit reconnect attempts for code 440 (conflict:replaced)
