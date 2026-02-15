@@ -117,10 +117,37 @@ function shouldExitAfterPair(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
+function defaultDeviceName(): string {
+  const fromEnv = (process.env.WHATSAPP_DEVICE_NAME || "").trim();
+  if (fromEnv) return fromEnv;
+  // Stable-ish and helpful when multiple devices are linked.
+  return `whatsapp-mcp-${os.hostname()}`;
+}
+
+async function maybePromptDeviceNameForPairing(authDir: string): Promise<void> {
+  // Never prompt for stdio-spawned MCP clients.
+  if (!process.stdin.isTTY) return;
+
+  const credsPath = path.join(authDir, "creds.json");
+  const needsPairing = !fs.existsSync(credsPath);
+  if (!needsPairing) return;
+
+  const def = defaultDeviceName();
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    console.error("WhatsApp pairing: choose a label for this linked device (shown in WhatsApp -> Linked devices).");
+    const answer = (await rl.question(`Device label (default: ${def}): `)).trim();
+    process.env.WHATSAPP_DEVICE_NAME = answer || def;
+  } finally {
+    rl.close();
+  }
+}
+
 async function main(): Promise<void> {
   // Initialize WhatsApp client
   const authDir = resolveAuthDir();
   await maybeRelinkAuthDir(authDir);
+  await maybePromptDeviceNameForPairing(authDir);
   const client = new WhatsAppClient(authDir);
   const exitAfterPair = shouldExitAfterPair();
   let sawQrThisRun = false;

@@ -76,7 +76,7 @@ claude mcp add whatsapp node /absolute/path/to/whatsapp-mcp-server/dist/index.js
 | Environment Variable | Default | Description |
 |---|---|---|
 | `WHATSAPP_AUTH_DIR` | `~/.whatsapp-mcp/auth` | Directory for session persistence |
-| `WHATSAPP_DEVICE_NAME` | *(unset)* | Optional linked-device label shown in WhatsApp ("Linked devices"), e.g. `WHATSAPP_DEVICE_NAME=MarkusBot-1` (will show like `MarkusBot-1 (Mac OS)` or `... (Ubuntu)`). |
+| `WHATSAPP_DEVICE_NAME` | *(unset)* | Optional linked-device label shown in WhatsApp ("Linked devices"), e.g. `WHATSAPP_DEVICE_NAME=MarkusBot-1` (will show like `MarkusBot-1 (Mac OS)` or `... (Ubuntu)`). When you run the server manually to pair (TTY), it will prompt for this label if not paired yet. |
 | `WHATSAPP_RELINK` | *(unset)* | Force re-linking in non-interactive environments. Use `backup` (or `1`/`true`) to move the existing auth dir aside, or `delete` to remove it. |
 | `WHATSAPP_EXIT_AFTER_PAIR` | `auto` | If a QR code was shown in this run, exit automatically after successful pairing. Defaults to enabled only for interactive terminal runs (TTY). |
 | `WHATSAPP_PERSIST_MESSAGES` | `false` | Persist the local message store to disk (`message-store.json`). |
