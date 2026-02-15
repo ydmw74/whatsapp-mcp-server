@@ -71,6 +71,7 @@ claude mcp add whatsapp node /absolute/path/to/whatsapp-mcp-server/dist/index.js
 | Environment Variable | Default | Description |
 |---|---|---|
 | `WHATSAPP_AUTH_DIR` | `~/.whatsapp-mcp/auth` | Directory for session persistence |
+| `WHATSAPP_RELINK` | *(unset)* | Force re-linking in non-interactive environments. Use `backup` (or `1`/`true`) to move the existing auth dir aside, or `delete` to remove it. |
 
 ## Tools Reference
 
