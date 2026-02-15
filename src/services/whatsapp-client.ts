@@ -111,6 +111,7 @@ export class WhatsAppClient {
       printQRInTerminal: false,
       generateHighQualityLinkPreview: false,
       syncFullHistory: false,
+      shouldSyncHistoryMessage: () => true,
     });
 
     this.socket.ev.on("creds.update", saveCreds);
@@ -148,9 +149,21 @@ export class WhatsAppClient {
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
         if (shouldReconnect) {
-          console.error("Connection closed, reconnecting...");
+          // Clean up old socket before reconnecting
+          if (this.socket) {
+            this.socket.ev.removeAllListeners("connection.update");
+            this.socket.ev.removeAllListeners("creds.update");
+            this.socket.ev.removeAllListeners("messaging-history.set");
+            this.socket.ev.removeAllListeners("chats.upsert");
+            this.socket.ev.removeAllListeners("chats.update");
+            this.socket.ev.removeAllListeners("contacts.upsert");
+            this.socket.ev.removeAllListeners("messages.upsert");
+            this.socket = null as any;
+          }
+          const delay = statusCode === 440 ? 5000 : 2000;
+          console.error("Connection closed (code: " + statusCode + "), reconnecting in " + delay + "ms...");
           this.qrDisplayed = false;
-          this.connect();
+          setTimeout(() => this.connect(), delay);
         } else {
           this.notifyConnection({
             connected: false,
@@ -212,6 +225,7 @@ export class WhatsAppClient {
         }
       }
     });
+
 
     // Track contacts for individual chat names
     this.socket.ev.on("contacts.upsert", (contacts) => {
