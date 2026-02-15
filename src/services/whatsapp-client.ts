@@ -58,6 +58,7 @@ export class WhatsAppClient {
   private connectionCallbacks: ConnectionCallback[] = [];
   private _status: ConnectionStatus = { connected: false };
   private qrDisplayed = false;
+  private chatStore: Map<string, { id: string; name: string; isGroup: boolean; conversationTimestamp?: number }> = new Map();
 
   constructor(authDir?: string) {
     this.authDir = authDir || path.join(
@@ -166,6 +167,51 @@ export class WhatsAppClient {
         console.error(`WhatsApp connected as +${phoneNumber}`);
       }
     });
+
+    // Listen for chat updates to build an in-memory chat store
+    this.socket.ev.on("messaging-history.set", ({ chats }) => {
+      for (const chat of chats) {
+        if (!chat.id) continue;
+        const id = chat.id;
+        const isGroup = id.endsWith("@g.us");
+        this.chatStore.set(id, {
+          id,
+          name: (chat as any).name || (chat as any).subject || id.split("@")[0],
+          isGroup,
+          conversationTimestamp: (chat as any).conversationTimestamp || 0,
+        });
+      }
+      console.error(`Chat store updated: ${this.chatStore.size} chats loaded`);
+    });
+
+    this.socket.ev.on("chats.upsert", (chats) => {
+      for (const chat of chats) {
+        if (!chat.id) continue;
+        const id = chat.id;
+        const isGroup = id.endsWith("@g.us");
+        this.chatStore.set(id, {
+          id,
+          name: (chat as any).name || (chat as any).subject || id.split("@")[0],
+          isGroup,
+          conversationTimestamp: (chat as any).conversationTimestamp || 0,
+        });
+      }
+    });
+
+    this.socket.ev.on("chats.update", (updates) => {
+      for (const update of updates) {
+        if (!update.id) continue;
+        const existing = this.chatStore.get(update.id);
+        if (existing) {
+          if ((update as any).name) existing.name = (update as any).name;
+          if ((update as any).subject) existing.name = (update as any).subject;
+          if ((update as any).conversationTimestamp) {
+            existing.conversationTimestamp = (update as any).conversationTimestamp;
+          }
+          this.chatStore.set(update.id, existing);
+        }
+      }
+    });
   }
 
   async disconnect(): Promise<void> {
@@ -186,27 +232,19 @@ export class WhatsAppClient {
   }
 
   async getChats(limit: number = 20): Promise<WhatsAppChat[]> {
-    const sock = this.ensureConnected();
-    const chats: WhatsAppChat[] = [];
+    this.ensureConnected();
 
-    // Get all chats from the store
-    const conversations = await sock.groupFetchAllParticipating();
+    // Return chats from the in-memory store (populated via events)
+    const allChats = Array.from(this.chatStore.values())
+      .sort((a, b) => (b.conversationTimestamp || 0) - (a.conversationTimestamp || 0))
+      .slice(0, limit);
 
-    // Get individual chats from contact list
-    const store = sock as any;
-
-    // Return available group chats
-    for (const [id, group] of Object.entries(conversations)) {
-      if (chats.length >= limit) break;
-      chats.push({
-        id,
-        name: (group as any).subject || id,
-        isGroup: true,
-        unreadCount: 0,
-      });
-    }
-
-    return chats;
+    return allChats.map((chat) => ({
+      id: chat.id,
+      name: chat.name || chat.id.split("@")[0],
+      isGroup: chat.isGroup,
+      unreadCount: 0,
+    }));
   }
 
   async sendMessage(
