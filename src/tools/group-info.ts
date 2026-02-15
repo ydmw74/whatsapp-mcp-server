@@ -45,7 +45,7 @@ Returns:
           info.description ? `> ${info.description}` : "_No description_",
           "",
           `**Participants:** ${info.participants.length}`,
-          `**Created:** ${new Date(info.creation * 1000).toLocaleDateString("de-DE")}`,
+          `**Created:** ${info.creation > 0 ? new Date(info.creation * 1000).toLocaleDateString("de-DE") : "_Unknown_"}`,
           "",
         ];
 
