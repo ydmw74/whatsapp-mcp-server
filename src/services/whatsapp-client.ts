@@ -202,9 +202,14 @@ export class WhatsAppClient {
               return;
             }
           }
-          console.error("Connection closed (code: " + statusCode + "), reconnecting...");
+          const delay = statusCode === 440 ? 5000 : 2000;
+          console.error("Connection closed (code: " + statusCode + "), reconnecting in " + delay + "ms...");
           this.qrDisplayed = false;
-          this.connect();
+          setTimeout(() => {
+            if (generation === this.socketGeneration) {
+              this.connect();
+            }
+          }, delay);
         } else {
           this.notifyConnection({
             connected: false,
@@ -213,7 +218,12 @@ export class WhatsAppClient {
         }
       } else if (connection === "open") {
         this.qrDisplayed = false;
-        this.reconnectCount440 = 0;
+        // Only reset reconnect counter after 30s of stable connection
+        setTimeout(() => {
+          if (this.isConnected && generation === this.socketGeneration) {
+            this.reconnectCount440 = 0;
+          }
+        }, 30000);
         const phoneNumber = this.socket?.user?.id?.split(":")[0] || "unknown";
         this.notifyConnection({
           connected: true,
