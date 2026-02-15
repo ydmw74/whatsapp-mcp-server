@@ -19,6 +19,7 @@ import makeWASocket, {
 import { Boom } from "@hapi/boom";
 import * as path from "path";
 import * as fs from "fs";
+import pino from "pino";
 
 export interface WhatsAppMessage {
   id: string;
@@ -92,12 +93,20 @@ export class WhatsAppClient {
     const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
     const { version } = await fetchLatestBaileysVersion();
 
+    // Create a logger that writes to stderr to avoid polluting stdout
+    // (stdout is reserved for the MCP JSON-RPC stdio transport)
+    const logger = pino(
+      { level: "warn" },
+      pino.destination({ dest: 2, sync: true })
+    );
+
     this.socket = makeWASocket({
       version,
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, undefined as any),
+        keys: makeCacheableSignalKeyStore(state.keys, logger as any),
       },
+      logger: logger as any,
       printQRInTerminal: false,
       generateHighQualityLinkPreview: false,
       syncFullHistory: false,
