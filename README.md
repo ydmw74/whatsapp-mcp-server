@@ -419,6 +419,10 @@ npm run clean
 - [OpenClaw](https://github.com/openclaw/openclaw) — Inspiration for the WhatsApp integration architecture
 - [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) — Model Context Protocol SDK
 
+## Contributors
+
+See [CONTRIBUTORS.md](./CONTRIBUTORS.md).
+
 ## License
 
 MIT
