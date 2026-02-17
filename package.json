@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node dist/index.js",
+    "start:http": "WHATSAPP_MCP_TRANSPORT=http node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "clean": "rm -rf dist",
@@ -40,7 +41,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.6.1",
-    "@whiskeysockets/baileys": "^6.7.16",
+    "@whiskeysockets/baileys": "^6.7.21",
     "pino": "^10.3.1",
     "qrcode-terminal": "^0.12.0",
     "zod": "^3.23.8"

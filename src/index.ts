@@ -13,6 +13,8 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { WhatsAppClient } from "./services/whatsapp-client.js";
 import { registerStatusTool } from "./tools/status.js";
 import { registerChatsTool } from "./tools/chats.js";
@@ -26,7 +28,28 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { createInterface } from "node:readline/promises";
+
+type TransportMode = "stdio" | "http";
+
+function createMcpServer(client: WhatsAppClient): McpServer {
+  const server = new McpServer({
+    name: "whatsapp-mcp-server",
+    version: "0.1.0",
+  });
+
+  registerStatusTool(server, client);
+  registerChatsTool(server, client);
+  registerSendMessageTool(server, client);
+  registerGroupInfoTool(server, client);
+  registerListMessagesTool(server, client);
+  registerDownloadMediaTool(server, client);
+  registerSendFileTool(server, client);
+
+  return server;
+}
 
 function resolveAuthDir(): string {
   const raw = process.env.WHATSAPP_AUTH_DIR;
@@ -34,6 +57,35 @@ function resolveAuthDir(): string {
     return raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(2)) : raw;
   }
   return path.join(os.homedir(), ".whatsapp-mcp", "auth");
+}
+
+function resolveTransportMode(): TransportMode {
+  const raw = (process.env.WHATSAPP_MCP_TRANSPORT || "stdio").trim().toLowerCase();
+  if (!raw || raw === "stdio") return "stdio";
+  if (raw === "http" || raw === "streamable-http" || raw === "streamable_http" || raw === "streamablehttp") {
+    return "http";
+  }
+  throw new Error(`Invalid WHATSAPP_MCP_TRANSPORT: ${raw}. Expected "stdio" or "http".`);
+}
+
+function resolveHttpHost(): string {
+  return (process.env.WHATSAPP_HTTP_HOST || "127.0.0.1").trim();
+}
+
+function resolveHttpPort(): number {
+  const raw = (process.env.WHATSAPP_HTTP_PORT || "8787").trim();
+  const port = Number.parseInt(raw, 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid WHATSAPP_HTTP_PORT: ${raw}. Expected integer 1-65535.`);
+  }
+  return port;
+}
+
+function resolveHttpPath(): string {
+  const raw = (process.env.WHATSAPP_HTTP_PATH || "/mcp").trim();
+  const withLeadingSlash = raw.startsWith("/") ? raw : `/${raw}`;
+  if (withLeadingSlash === "/") return withLeadingSlash;
+  return withLeadingSlash.replace(/\/+$/, "");
 }
 
 function parseRelinkMode(): "backup" | "delete" | null {
@@ -117,11 +169,134 @@ function shouldExitAfterPair(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
+function sendJsonError(res: ServerResponse, statusCode: number, message: string): void {
+  res.statusCode = statusCode;
+  res.setHeader("content-type", "application/json");
+  res.end(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message,
+      },
+      id: null,
+    }),
+  );
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  for await (const chunk of req) {
+    const bufferChunk = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    chunks.push(bufferChunk);
+    totalBytes += bufferChunk.length;
+    if (totalBytes > 1_000_000) {
+      throw new Error("Request body too large");
+    }
+  }
+
+  if (chunks.length === 0) return undefined;
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error("Invalid JSON request body");
+  }
+}
+
+function getSessionId(req: IncomingMessage): string | undefined {
+  const header = req.headers["mcp-session-id"];
+  if (Array.isArray(header)) return header[0];
+  return header;
+}
+
+async function startHttpTransport(client: WhatsAppClient): Promise<void> {
+  const host = resolveHttpHost();
+  const port = resolveHttpPort();
+  const mcpPath = resolveHttpPath();
+  const sessions = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
+
+  const httpServer = createServer((req, res) => {
+    void (async () => {
+      try {
+        const reqUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+        if (reqUrl.pathname !== mcpPath) {
+          res.statusCode = 404;
+          res.end("Not Found");
+          return;
+        }
+
+        const method = (req.method || "GET").toUpperCase();
+        const parsedBody = method === "POST" ? await readJsonBody(req) : undefined;
+        const sessionId = getSessionId(req);
+
+        let entry = sessionId ? sessions.get(sessionId) : undefined;
+
+        if (!entry) {
+          if (sessionId) {
+            sendJsonError(res, 404, "Unknown MCP session id");
+            return;
+          }
+          if (method !== "POST" || !isInitializeRequest(parsedBody)) {
+            sendJsonError(res, 400, "No active MCP session. Send initialize first.");
+            return;
+          }
+
+          const server = createMcpServer(client);
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (newSessionId) => {
+              sessions.set(newSessionId, { server, transport });
+            },
+            onsessionclosed: async (closedSessionId) => {
+              const closed = sessions.get(closedSessionId);
+              sessions.delete(closedSessionId);
+              if (closed) {
+                try {
+                  await closed.server.close();
+                } catch (error) {
+                  console.error("Failed to close MCP session server:", error);
+                }
+              }
+            },
+          });
+
+          await server.connect(transport);
+          entry = { server, transport };
+        }
+
+        await entry.transport.handleRequest(req, res, parsedBody);
+      } catch (error) {
+        console.error("HTTP transport request failed:", error);
+        if (!res.headersSent) {
+          sendJsonError(res, 500, "Internal server error");
+        } else {
+          res.destroy();
+        }
+      }
+    })();
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once("error", reject);
+    httpServer.listen(port, host, () => {
+      httpServer.off("error", reject);
+      resolve();
+    });
+  });
+
+  console.error(`WhatsApp MCP server running via streamable HTTP at http://${host}:${port}${mcpPath}`);
+}
+
 async function main(): Promise<void> {
   // Initialize WhatsApp client
   const authDir = resolveAuthDir();
   await maybeRelinkAuthDir(authDir);
   const client = new WhatsAppClient(authDir);
+  const transportMode = resolveTransportMode();
   const exitAfterPair = shouldExitAfterPair();
   let sawQrThisRun = false;
   let exitScheduled = false;
@@ -137,31 +312,21 @@ async function main(): Promise<void> {
     }
   });
 
-  // Create MCP server
-  const server = new McpServer({
-    name: "whatsapp-mcp-server",
-    version: "0.1.0",
-  });
-
-  // Register all tools
-  registerStatusTool(server, client);
-  registerChatsTool(server, client);
-  registerSendMessageTool(server, client);
-  registerGroupInfoTool(server, client);
-  registerListMessagesTool(server, client);
-  registerDownloadMediaTool(server, client);
-  registerSendFileTool(server, client);
-
   // Start WhatsApp connection (runs in background)
   console.error("Starting WhatsApp connection...");
   client.connect().catch((error) => {
     console.error("WhatsApp connection error:", error);
   });
 
-  // Connect MCP server to stdio transport
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("WhatsApp MCP server running via stdio");
+  if (transportMode === "stdio") {
+    const server = createMcpServer(client);
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error("WhatsApp MCP server running via stdio");
+    return;
+  }
+
+  await startHttpTransport(client);
 }
 
 main().catch((error) => {
