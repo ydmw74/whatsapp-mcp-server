@@ -317,12 +317,16 @@ ss -lntp | grep 8787
 ### 5.1 QR code in PM2 logs (scan-friendly output)
 
 PM2 prefixes each line with timestamp/process metadata, which can make the terminal QR hard to scan.
-To print the latest QR block from the raw logfile without timestamp prefix:
+Use the helper script (from repository root) to print the latest complete QR block:
 
 ```bash
-sed -n '/=== WhatsApp QR Code ===/,/========================/p' /root/.pm2/logs/whatsapp-mcp-error-0.log \
-| tail -n 40 \
-| sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+: //'
+./scripts/show-whatsapp-qr.sh
+```
+
+Optional: pass a different PM2 app name:
+
+```bash
+./scripts/show-whatsapp-qr.sh whatsapp-mcp
 ```
 
 ### 6. Connect MCP clients to your Linux host
@@ -367,9 +371,7 @@ pm2 logs whatsapp-mcp --lines 100 --nostream
 If QR output is not scanable in PM2 logs:
 
 ```bash
-sed -n '/=== WhatsApp QR Code ===/,/========================/p' /root/.pm2/logs/whatsapp-mcp-error-0.log \
-| tail -n 40 \
-| sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+: //'
+./scripts/show-whatsapp-qr.sh
 ```
 
 If PM2 is running but not restored after reboot:
