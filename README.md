@@ -9,7 +9,8 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 - **`whatsapp_list_messages`** — List recent messages from the server's local store (observed while running; optional persistence)
 - **`whatsapp_send_message`** — Send text messages to contacts or groups
 - **`whatsapp_send_file`** — Send files/media (document/image/video/audio/voice note)
-- **`whatsapp_download_media`** — Download attachments (including voice notes) from messages observed by this server
+- **`whatsapp_get_media`** — Get media directly as Base64 without local download (new!)
+- **`whatsapp_download_media`** — Download attachments (including voice notes) to local file
 - **`whatsapp_get_group_info`** — Get group details, participants, and admin info
 
 ## Prerequisites
@@ -175,6 +176,22 @@ Download an attachment (including voice notes) from a message that the server ha
 - `output_dir` (string, optional) — Directory to write the file to (supports `~/` expansion)
 
 **Returns:** Absolute file `path` and `media` metadata.
+
+### `whatsapp_get_media`
+
+Get media (attachments) directly from the server as Base64 without saving to disk.
+
+**Parameters:**
+- `chat_id` (string) — Chat JID (from `whatsapp_list_messages`)
+- `message_id` (string) — Message ID (from `whatsapp_list_messages`)
+- `format` (string, optional) — Return format: `"base64"` for raw base64 (default) or `"data_url"` for image data URL
+
+**Returns:** Base64 encoded media and `media` metadata.
+
+**Notes:**
+- Only works for messages observed by the server since it started
+- No local file download required
+- Supports images, videos, documents, audio, and voice notes
 
 ### `whatsapp_get_group_info`
 
