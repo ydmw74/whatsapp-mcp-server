@@ -19,8 +19,9 @@ Repo: `<repo-root>`
   - Non-interactive MCP runs never prompt (to avoid blocking stdio).
 - Media support:
   - `whatsapp_send_file` (document/image/video/audio/voice note)
-  - `whatsapp_download_media` (downloads attachments for messages the server has observed since it started)
-  - `whatsapp_list_messages` shows media metadata and a hint for `whatsapp_download_media`.
+  - `whatsapp_get_media` (returns media directly as Base64 without local download) - new!
+  - `whatsapp_download_media` (downloads attachments to local file)
+  - `whatsapp_list_messages` shows media metadata and hints for media tools.
 - Voice notes:
   - Inbound: detected as `audio` with `isVoiceNote=true`.
   - Outbound: send with `kind=voice` (sends as PTT/voice note).
@@ -32,10 +33,11 @@ Media support was merged via PR #4: https://github.com/ydmw74/whatsapp-mcp-serve
 - `src/services/whatsapp-client.ts`:
   - `WHATSAPP_DEVICE_NAME` support via Baileys `browser` config.
   - In-memory raw message cache used for media downloads.
-  - `sendFile(...)` and `downloadMedia(...)` implementations.
-- `src/schemas/index.ts`: new Zod schemas for send/download media tools.
-- `src/tools/send-file.ts`, `src/tools/download-media.ts`: MCP tool registrations.
-- `src/tools/list-messages.ts`: prints media metadata + download hint.
+  - `sendFile(...)`, `getMedia(...)` (returns media as Base64), and `downloadMedia(...)` implementations.
+  - `loadRawMessageStore()` loads persisted messages for media downloads (new!).
+- `src/schemas/index.ts`: new Zod schemas for send/get/download media tools.
+- `src/tools/send-file.ts`, `src/tools/get-media.ts`, `src/tools/download-media.ts`: MCP tool registrations.
+- `src/tools/list-messages.ts`: prints media metadata + media tool hints.
 - `README.md`, `.env.example`: documented new env vars/tools.
 
 ## How To Continue Next Time
