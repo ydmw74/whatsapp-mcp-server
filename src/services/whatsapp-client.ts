@@ -164,6 +164,48 @@ export class WhatsAppClient {
     }
   }
 
+  loadRawMessageStore(): void {
+    if (!this.persistMessages) return;
+    try {
+      const file = this.messageStoreFile;
+      if (!fs.existsSync(file)) return;
+      const data = JSON.parse(fs.readFileSync(file, "utf-8"));
+      if (!Array.isArray(data)) return;
+      
+      let loadedCount = 0;
+      for (const entry of data) {
+        const chatId = entry?.chatId;
+        const messageId = entry?.id;
+        if (!chatId || !messageId || typeof chatId !== "string" || typeof messageId !== "string") continue;
+        
+        const key = `${chatId}:${messageId}`;
+        if (this.rawMessageByKey.has(key)) continue;
+        
+        const message = {
+          key: { remoteJid: chatId, fromMe: entry?.fromMe || false, id: messageId },
+          message: entry?.message,
+          messageTimestamp: entry?.timestamp,
+          messageStubType: entry?.stubType,
+          messageTimestampLow: entry?.timestampLow,
+          messageTimestampHigh: entry?.timestampHigh,
+          pushName: entry?.pushName,
+          participant: entry?.participant,
+          isForwarded: entry?.isForwarded,
+          isViewOnce: entry?.isViewOnce,
+        } as WAMessage;
+        
+        this.rawMessageByKey.set(key, message);
+        loadedCount++;
+      }
+      
+      if (loadedCount > 0) {
+        console.error("Loaded " + loadedCount + " raw messages from persistent store for media downloads");
+      }
+    } catch (e) {
+      console.error("Failed to load raw message store: " + e);
+    }
+  }
+
   private scheduleSaveChatStore(): void {
     if (this.saveChatStoreTimer) return;
     this.saveChatStoreTimer = setTimeout(() => {

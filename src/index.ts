@@ -312,6 +312,9 @@ async function main(): Promise<void> {
       console.error("WhatsApp pairing complete. Exiting (session saved).");
       setTimeout(() => process.exit(0), 1000);
     }
+    if (status.connected && !exitScheduled) {
+      client.loadRawMessageStore();
+    }
   });
 
   // Start WhatsApp connection (runs in background)
