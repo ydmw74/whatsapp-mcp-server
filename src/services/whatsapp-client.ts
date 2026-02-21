@@ -598,6 +598,53 @@ export class WhatsAppClient {
     };
   }
 
+  async getMedia(
+    chatId: string,
+    messageId: string,
+    format: "base64" | "data_url" = "base64"
+  ): Promise<{ base64: string; media: WhatsAppMedia }> {
+    const sock = this.ensureConnected();
+    const normalizedChatId = this.normalizeJid(chatId);
+    const key = `${normalizedChatId}:${messageId}`;
+    const msg = this.rawMessageByKey.get(key);
+    if (!msg) {
+      throw new Error(
+        "Message not found in the in-memory store. " +
+        "The server can only get media for messages it has observed since it started."
+      );
+    }
+
+    const messageContent = normalizeMessageContent(msg.message) as any;
+    const meta: WhatsAppMedia = this.extractMediaMetaFromContent(messageContent) || { kind: "unknown" };
+
+    const logger = (sock as any).logger || pino({ level: "warn" }, pino.destination({ dest: 2, sync: true }));
+    
+    let data: Buffer;
+    let base64: string;
+    
+    try {
+      data = await downloadMediaMessage(
+        msg,
+        "buffer",
+        {},
+        { reuploadRequest: (m) => (sock as any).updateMediaMessage(m), logger }
+      );
+      base64 = data.toString("base64");
+    } catch (error) {
+      throw new Error(
+        `Failed to download media: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    return {
+      base64,
+      media: {
+        ...meta,
+        fileLength: data.length,
+      },
+    };
+  }
+
   async listMessages(chatId?: string, limit: number = 20): Promise<WhatsAppMessage[]> {
     const normalized = chatId ? this.normalizeJid(chatId) : undefined;
     const messages = normalized

@@ -23,6 +23,7 @@ import { registerGroupInfoTool } from "./tools/group-info.js";
 import { registerListMessagesTool } from "./tools/list-messages.js";
 import { registerDownloadMediaTool } from "./tools/download-media.js";
 import { registerSendFileTool } from "./tools/send-file.js";
+import { registerGetMediaTool } from "./tools/get-media.js";
 
 import * as os from "node:os";
 import * as path from "node:path";
@@ -47,6 +48,7 @@ function createMcpServer(client: WhatsAppClient): McpServer {
   registerListMessagesTool(server, client);
   registerDownloadMediaTool(server, client);
   registerSendFileTool(server, client);
+  registerGetMediaTool(server, client);
 
   return server;
 }

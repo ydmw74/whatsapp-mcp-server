@@ -57,6 +57,19 @@ export const DownloadMediaInputSchema = z.object({
     .describe("Optional output directory for the downloaded file. Supports '~/' expansion. Default: <authDir>/../downloads"),
 }).strict();
 
+export const GetMediaInputSchema = z.object({
+  chat_id: z.string()
+    .min(1)
+    .describe("WhatsApp chat ID (JID). Use the Chat field from whatsapp_list_messages."),
+  message_id: z.string()
+    .min(1)
+    .describe("Message ID within the chat. Use the ID field from whatsapp_list_messages."),
+  format: z.enum(["base64", "data_url"])
+    .optional()
+    .default("base64")
+    .describe("Return format: 'base64' for raw base64 or 'data_url' for image data URL"),
+}).strict();
+
 export const SendFileInputSchema = z.object({
   chat_id: z.string()
     .min(1)
@@ -88,3 +101,4 @@ export type GetGroupInfoInput = z.infer<typeof GetGroupInfoInputSchema>;
 export type ListMessagesInput = z.infer<typeof ListMessagesInputSchema>;
 export type DownloadMediaInput = z.infer<typeof DownloadMediaInputSchema>;
 export type SendFileInput = z.infer<typeof SendFileInputSchema>;
+export type GetMediaInput = z.infer<typeof GetMediaInputSchema>;
