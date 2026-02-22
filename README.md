@@ -21,6 +21,8 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 
 > **Compatibility:** Works with both **regular WhatsApp** and **WhatsApp Business** accounts. Baileys implements the WhatsApp Web Multi-Device protocol, which is identical for both account types. Business-specific features (catalogs, auto-replies, labels) are not supported by this server.
 
+> **Important:** This server requires `@whiskeysockets/baileys@^7.0.0-rc.9` or later. Older versions may fail to generate valid QR codes for new device linking.
+
 
 ## Quick Start
 
@@ -253,7 +255,7 @@ Session state is persisted to disk so re-authentication is only needed once.
 
 This is the recommended setup if you want a single MCP server running on a dedicated Linux host in your LAN.
 
-> Field note (verified): On February 17, 2026, a deployment with `@whiskeysockets/baileys@6.7.21` resolved a prior "cannot add new linked devices" failure on this setup.
+> **Important:** Baileys 7.x (this project requires `^7.0.0-rc.9`) is required for QR code authentication to work properly. If you encounter QR code issues, ensure you have the correct Baileys version installed.
 
 ### 0. Fresh server preflight (if Node.js/npm are missing)
 

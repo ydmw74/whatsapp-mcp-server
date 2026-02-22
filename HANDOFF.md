@@ -5,6 +5,7 @@ Repo: `<repo-root>`
 ## Where We Left Off
 
 ### In `main` (as of HEAD)
+- **Baileys 7.x required**: This project now requires `@whiskeysockets/baileys@^7.0.0-rc.9` or later. Older versions (6.x) fail to generate valid QR codes for new device linking.
 - Packaging: `prepare`/`prepack` run `npm run build` and `files` whitelist includes `dist/` so installs/publish work even though `dist/` is gitignored.
 - Auth relink flow:
   - Interactive (TTY): prompt to create a new link + backup/delete existing auth dir.
@@ -35,10 +36,29 @@ Media support was merged via PR #4: https://github.com/ydmw74/whatsapp-mcp-serve
   - In-memory raw message cache used for media downloads.
   - `sendFile(...)`, `getMedia(...)` (returns media as Base64), and `downloadMedia(...)` implementations.
   - `loadRawMessageStore()` loads persisted messages for media downloads (new!).
+  - **Note**: Baileys 7.x requires dynamic import (`await import("@whiskeysockets/baileys")`) due to ESM-only module format. Static imports will fail.
 - `src/schemas/index.ts`: new Zod schemas for send/get/download media tools.
 - `src/tools/send-file.ts`, `src/tools/get-media.ts`, `src/tools/download-media.ts`: MCP tool registrations.
 - `src/tools/list-messages.ts`: prints media metadata + media tool hints.
 - `README.md`, `.env.example`: documented new env vars/tools.
+
+## PM2 Helper Script
+
+For deployments with PM2, use the helper script to display QR codes cleanly:
+
+```bash
+# On the server
+whatsapp-qr
+```
+
+This script is installed at `/usr/local/bin/whatsapp-qr` and extracts the QR code from PM2 logs without timestamp prefixes.
+
+## Known Limitations / Notes
+- **Baileys 7.x compatibility**: The code uses dynamic `await import()` for Baileys because version 7.x is ESM-only. Static imports will cause "Cannot find module" errors.
+- `whatsapp_download_media` only works for messages observed since the server started (raw message cache is in-memory and bounded).
+- No automatic audio transcoding: for `kind=voice` you should send a compatible file (typically OGG/Opus).
+- MCP config (Codex) was adjusted to run via `node` (because `dist/index.js` is not necessarily executable):
+  - `~/.codex/config.toml` uses `command="node"` and `args=["/absolute/path/to/whatsapp-mcp-server/dist/index.js"]`.
 
 ## How To Continue Next Time
 
@@ -62,6 +82,11 @@ node dist/index.js
 ```
 It should prompt for `Device label (...)` before showing the QR code.
 
+### QR code on PM2
+```bash
+whatsapp-qr
+```
+
 ### Media end-to-end
 - Send an image/document/voice note to the linked WhatsApp account while the server is running.
 - Use `whatsapp_list_messages` and verify:
@@ -70,9 +95,3 @@ It should prompt for `Device label (...)` before showing the QR code.
 - Call `whatsapp_download_media` using the shown `chat_id` + `message_id`.
 - For outbound:
   - `whatsapp_send_file` with `kind=document|image|video|audio|voice`.
-
-## Known Limitations / Notes
-- `whatsapp_download_media` only works for messages observed since the server started (raw message cache is in-memory and bounded).
-- No automatic audio transcoding: for `kind=voice` you should send a compatible file (typically OGG/Opus).
-- MCP config (Codex) was adjusted to run via `node` (because `dist/index.js` is not necessarily executable):
-  - `~/.codex/config.toml` uses `command="node"` and `args=["/absolute/path/to/whatsapp-mcp-server/dist/index.js"]`.

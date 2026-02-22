@@ -3,19 +3,6 @@
  * Manages connection, authentication, and message operations.
  */
 
-import makeWASocket, {
-  DisconnectReason,
-  Browsers,
-  useMultiFileAuthState,
-  WASocket,
-  WAMessage,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-  downloadMediaMessage,
-  extensionForMediaMessage,
-  normalizeMessageContent,
-  getContentType,
-} from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
 import * as os from "os";
 import * as path from "path";
@@ -65,8 +52,26 @@ type ConnectionCallback = (status: ConnectionStatus) => void;
 
 type StoredMessage = Omit<WhatsAppMessage, "chatName">;
 
+let makeWASocket: any, DisconnectReason: any, Browsers: any, useMultiFileAuthState: any, fetchLatestBaileysVersion: any, makeCacheableSignalKeyStore: any, downloadMediaMessage: any, extensionForMediaMessage: any, normalizeMessageContent: any, getContentType: any;
+
+async function initBaileys() {
+  if (!makeWASocket) {
+    const baileys = await import("@whiskeysockets/baileys");
+    makeWASocket = baileys.default || baileys.makeWASocket;
+    DisconnectReason = baileys.DisconnectReason;
+    Browsers = baileys.Browsers;
+    useMultiFileAuthState = baileys.useMultiFileAuthState;
+    fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion;
+    makeCacheableSignalKeyStore = baileys.makeCacheableSignalKeyStore;
+    downloadMediaMessage = baileys.downloadMediaMessage;
+    extensionForMediaMessage = baileys.extensionForMediaMessage;
+    normalizeMessageContent = baileys.normalizeMessageContent;
+    getContentType = baileys.getContentType;
+  }
+}
+
 export class WhatsAppClient {
-  private socket: WASocket | null = null;
+  private socket: any | null = null;
   private authDir: string;
   private persistMessages: boolean;
   private maxMessagesPerChat: number;
@@ -79,7 +84,7 @@ export class WhatsAppClient {
   private saveChatStoreTimer: NodeJS.Timeout | null = null;
   private saveChatStoreInFlight: Promise<void> = Promise.resolve();
   private messageStore: Map<string, StoredMessage[]> = new Map();
-  private rawMessageByKey: Map<string, WAMessage> = new Map();
+  private rawMessageByKey: Map<string, any> = new Map();
   private saveMessageStoreTimer: NodeJS.Timeout | null = null;
   private saveMessageStoreInFlight: Promise<void> = Promise.resolve();
   private reconnectCount440 = 0;
@@ -192,7 +197,7 @@ export class WhatsAppClient {
           participant: entry?.participant,
           isForwarded: entry?.isForwarded,
           isViewOnce: entry?.isViewOnce,
-        } as WAMessage;
+        } as any;
         
         this.rawMessageByKey.set(key, message);
         loadedCount++;
@@ -272,6 +277,8 @@ export class WhatsAppClient {
 
   async connect(): Promise<void> {
     try {
+      await initBaileys();
+
       if (!fs.existsSync(this.authDir)) {
         fs.mkdirSync(this.authDir, { recursive: true });
       }
@@ -320,7 +327,7 @@ export class WhatsAppClient {
 
       this.socket.ev.on("creds.update", saveCreds);
 
-      this.socket.ev.on("connection.update", (update) => {
+      this.socket.ev.on("connection.update", (update: any) => {
         const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
@@ -403,7 +410,7 @@ export class WhatsAppClient {
       });
 
     // Listen for incoming messages to discover individual chats
-      this.socket.ev.on("messages.upsert", ({ messages }) => {
+      this.socket.ev.on("messages.upsert", ({ messages }: { messages: any[] }) => {
       let changed = false;
       for (const msg of messages) {
         const jid = msg.key.remoteJid;
@@ -436,7 +443,7 @@ export class WhatsAppClient {
       });
 
     // Listen for contacts to get names for individual chats
-      this.socket.ev.on("contacts.upsert", (contacts) => {
+      this.socket.ev.on("contacts.upsert", (contacts: any[]) => {
       let changed = false;
       for (const contact of contacts) {
         if (!contact.id) continue;
@@ -474,7 +481,7 @@ export class WhatsAppClient {
     }
   }
 
-  private ensureConnected(): WASocket {
+  private ensureConnected(): any {
     if (!this.socket || !this.isConnected) {
       throw new Error(
         "WhatsApp is not connected. Please wait for QR code scan and connection to complete."
@@ -626,7 +633,7 @@ export class WhatsAppClient {
       msg,
       "buffer",
       {},
-      { reuploadRequest: (m) => (sock as any).updateMediaMessage(m), logger }
+      { reuploadRequest: (m: any) => (sock as any).updateMediaMessage(m), logger }
     );
     await fs.promises.writeFile(outPath, data);
 
@@ -669,7 +676,7 @@ export class WhatsAppClient {
         msg,
         "buffer",
         {},
-        { reuploadRequest: (m) => (sock as any).updateMediaMessage(m), logger }
+      { reuploadRequest: (m: any) => (sock as any).updateMediaMessage(m), logger }
       );
       base64 = data.toString("base64");
     } catch (error) {
@@ -747,7 +754,7 @@ export class WhatsAppClient {
       id: metadata.id,
       subject: metadata.subject,
       description: metadata.desc || "",
-      participants: metadata.participants.map((p) => ({
+      participants: metadata.participants.map((p: any) => ({
         id: p.id,
         admin: p.admin === "admin" || p.admin === "superadmin",
       })),
@@ -817,7 +824,7 @@ export class WhatsAppClient {
     }
   }
 
-  private addToMessageStore(msg: WAMessage): void {
+  private addToMessageStore(msg: any): void {
     const chatId = msg.key.remoteJid;
     if (!chatId) return;
 
@@ -855,7 +862,7 @@ export class WhatsAppClient {
     this.scheduleSaveMessageStore();
   }
 
-  private extractTextAndType(msg: WAMessage): { text: string; type: string } {
+  private extractTextAndType(msg: any): { text: string; type: string } {
     const m: any = (msg as any).message;
     if (!m) {
       const stub = (msg as any).messageStubType;
@@ -870,7 +877,7 @@ export class WhatsAppClient {
     return this.extractTextFromAnyMessage(m);
   }
 
-  private extractMediaMeta(msg: WAMessage): WhatsAppMedia | undefined {
+  private extractMediaMeta(msg: any): WhatsAppMedia | undefined {
     const content = normalizeMessageContent(msg.message) as any;
     return this.extractMediaMetaFromContent(content);
   }
