@@ -63,6 +63,7 @@ Returns:
             if (typeof m.media.fileLength === "number") parts.push(`bytes=${m.media.fileLength}`);
             if (typeof m.media.seconds === "number") parts.push(`seconds=${m.media.seconds}`);
             lines.push(`  Media: ${parts.join("  ")}`);
+            if (m.media.caption) lines.push(`  Caption: ${m.media.caption}`);
             lines.push(`  Download: \`whatsapp_download_media\` with chat_id=\`${m.chatId}\` message_id=\`${m.id}\``);
           }
         }

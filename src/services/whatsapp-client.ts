@@ -34,6 +34,7 @@ export interface WhatsAppMedia {
   fileLength?: number;
   seconds?: number;
   isVoiceNote?: boolean;
+  caption?: string;
 }
 
 export interface WhatsAppChat {
@@ -927,6 +928,7 @@ export class WhatsAppClient {
     const mimetype = typeof m.mimetype === "string" ? m.mimetype : undefined;
     const fileName = typeof m.fileName === "string" ? m.fileName : undefined;
     const isVoiceNote = kind === "audio" ? Boolean(m.ptt) : undefined;
+    const caption = typeof m.caption === "string" && m.caption.length > 0 ? m.caption : undefined;
 
     // Only treat as "media" if it's a known media message shape.
     if (kind === "unknown") return undefined;
@@ -938,6 +940,7 @@ export class WhatsAppClient {
       fileLength,
       seconds,
       isVoiceNote,
+      caption,
     };
   }
 
