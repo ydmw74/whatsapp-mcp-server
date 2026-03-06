@@ -33,6 +33,11 @@ Repo: `<repo-root>`
   - Max file size: 50 MB (configurable via `WHATSAPP_UPLOAD_MAX_SIZE`).
   - Auto-cleanup: files older than 1 hour are deleted every 10 minutes.
   - Workflow: `curl -F "file=@local.wav" http://server:8787/upload` → returns `{"path": "/tmp/whatsapp-uploads/uuid-local.wav"}` → use path in `whatsapp_send_file`.
+- HTTP file download endpoint (`GET /download?path=...`):
+  - Serves files from allowed directories (`/tmp`, uploads dir, downloads dir) via HTTP.
+  - Security: path-prefix allowlist prevents arbitrary file access.
+  - Workflow: `whatsapp_download_media` → returns server path → `curl http://server:8787/download?path=...` → file downloaded to client.
+  - No SSH/SCP needed for media retrieval.
 
 Media support was merged via PR #4: https://github.com/ydmw74/whatsapp-mcp-server/pull/4
 

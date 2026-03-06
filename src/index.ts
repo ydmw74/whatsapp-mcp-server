@@ -142,6 +142,57 @@ async function handleUpload(req: IncomingMessage, res: ServerResponse): Promise<
   res.end(JSON.stringify({ path: destPath, size: fileData.length, name: originalName }));
 }
 
+/**
+ * Serves a file from an allowed directory via HTTP GET.
+ * Only files inside UPLOAD_DIR or the downloads directory are served.
+ */
+const DOWNLOAD_ALLOWED_PREFIXES: string[] = []; // populated at startup
+
+async function handleDownload(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const reqUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const filePath = reqUrl.searchParams.get("path");
+  if (!filePath) {
+    res.statusCode = 400;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ error: "Missing ?path= query parameter" }));
+    return;
+  }
+
+  const resolved = path.resolve(filePath);
+
+  // Security: only serve files from allowed directories.
+  const allowed = DOWNLOAD_ALLOWED_PREFIXES.some((prefix) => resolved.startsWith(prefix + path.sep) || resolved.startsWith(prefix + "/"));
+  if (!allowed) {
+    res.statusCode = 403;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ error: "Path not in an allowed directory" }));
+    return;
+  }
+
+  try {
+    await fsp.access(resolved, fs.constants.R_OK);
+  } catch {
+    res.statusCode = 404;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ error: "File not found" }));
+    return;
+  }
+
+  const stat = await fsp.stat(resolved);
+  const ext = path.extname(resolved).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    ".ogg": "audio/ogg", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+    ".mp4": "video/mp4", ".webm": "video/webm", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp", ".pdf": "application/pdf",
+  };
+
+  res.statusCode = 200;
+  res.setHeader("content-type", mimeTypes[ext] || "application/octet-stream");
+  res.setHeader("content-length", stat.size);
+  res.setHeader("content-disposition", `attachment; filename="${path.basename(resolved)}"`);
+  fs.createReadStream(resolved).pipe(res);
+}
+
 function createMcpServer(client: WhatsAppClient): McpServer {
   const server = new McpServer({
     name: "whatsapp-mcp-server",
@@ -322,11 +373,15 @@ function getSessionId(req: IncomingMessage): string | undefined {
   return header;
 }
 
-async function startHttpTransport(client: WhatsAppClient): Promise<void> {
+async function startHttpTransport(client: WhatsAppClient, authDir: string): Promise<void> {
   const host = resolveHttpHost();
   const port = resolveHttpPort();
   const mcpPath = resolveHttpPath();
   const sessions = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
+
+  // Configure allowed download directories.
+  const downloadsDir = path.resolve(path.join(authDir, "..", "downloads"));
+  DOWNLOAD_ALLOWED_PREFIXES.push(path.resolve(UPLOAD_DIR), downloadsDir, "/tmp");
 
   // Ensure upload directory exists and start periodic cleanup.
   await ensureUploadDir();
@@ -341,6 +396,12 @@ async function startHttpTransport(client: WhatsAppClient): Promise<void> {
         // ── File upload endpoint ────────────────────────────────
         if (reqUrl.pathname === "/upload" && (req.method || "").toUpperCase() === "POST") {
           await handleUpload(req, res);
+          return;
+        }
+
+        // ── File download endpoint ──────────────────────────────
+        if (reqUrl.pathname === "/download" && (req.method || "").toUpperCase() === "GET") {
+          await handleDownload(req, res);
           return;
         }
 
@@ -411,6 +472,7 @@ async function startHttpTransport(client: WhatsAppClient): Promise<void> {
 
   console.error(`WhatsApp MCP server running via streamable HTTP at http://${host}:${port}${mcpPath}`);
   console.error(`File upload endpoint available at http://${host}:${port}/upload`);
+  console.error(`File download endpoint available at http://${host}:${port}/download?path=...`);
 }
 
 async function main(): Promise<void> {
@@ -451,7 +513,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  await startHttpTransport(client);
+  await startHttpTransport(client, authDir);
 }
 
 main().catch((error) => {
