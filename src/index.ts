@@ -33,7 +33,114 @@ import { randomUUID } from "node:crypto";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { createInterface } from "node:readline/promises";
 
+
 type TransportMode = "stdio" | "http";
+
+// ── Upload endpoint helpers ───────────────────────────────────────────
+
+const UPLOAD_MAX_BYTES = Number.parseInt(process.env.WHATSAPP_UPLOAD_MAX_SIZE || "", 10) || 50 * 1024 * 1024; // 50 MB
+const UPLOAD_DIR = process.env.WHATSAPP_UPLOAD_DIR || "/tmp/whatsapp-uploads";
+const UPLOAD_TTL_MS = 60 * 60 * 1000; // 1 hour
+const UPLOAD_CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+
+async function ensureUploadDir(): Promise<void> {
+  await fsp.mkdir(UPLOAD_DIR, { recursive: true });
+}
+
+async function cleanupUploads(): Promise<void> {
+  try {
+    const entries = await fsp.readdir(UPLOAD_DIR);
+    const now = Date.now();
+    for (const entry of entries) {
+      const filePath = path.join(UPLOAD_DIR, entry);
+      try {
+        const stat = await fsp.stat(filePath);
+        if (now - stat.mtimeMs > UPLOAD_TTL_MS) {
+          await fsp.unlink(filePath);
+        }
+      } catch { /* file may have been deleted concurrently */ }
+    }
+  } catch { /* upload dir may not exist yet */ }
+}
+
+/**
+ * Minimal multipart/form-data parser.
+ * Extracts the first file part and streams it to disk.
+ * Returns the original filename from the Content-Disposition header.
+ */
+async function handleUpload(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const contentType = req.headers["content-type"] || "";
+  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^\s;]+))/);
+  if (!boundaryMatch) {
+    res.statusCode = 400;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ error: "Missing multipart boundary" }));
+    return;
+  }
+
+  const boundary = boundaryMatch[1] || boundaryMatch[2];
+  const delimiterBuf = Buffer.from(`--${boundary}`);
+
+  // Collect the full body (bounded by max upload size).
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  for await (const chunk of req) {
+    const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    totalBytes += buf.length;
+    if (totalBytes > UPLOAD_MAX_BYTES) {
+      res.statusCode = 413;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ error: `File exceeds maximum size of ${UPLOAD_MAX_BYTES} bytes` }));
+      return;
+    }
+    chunks.push(buf);
+  }
+
+  const body = Buffer.concat(chunks);
+
+  // Find the first part after the initial boundary.
+  const firstBoundaryIdx = body.indexOf(delimiterBuf);
+  if (firstBoundaryIdx === -1) {
+    res.statusCode = 400;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ error: "No multipart boundary found in body" }));
+    return;
+  }
+
+  // Find the end of headers (double CRLF).
+  const headersStart = firstBoundaryIdx + delimiterBuf.length + 2; // skip boundary + CRLF
+  const headerEndIdx = body.indexOf(Buffer.from("\r\n\r\n"), headersStart);
+  if (headerEndIdx === -1) {
+    res.statusCode = 400;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ error: "Malformed multipart headers" }));
+    return;
+  }
+
+  const headerBlock = body.subarray(headersStart, headerEndIdx).toString("utf8");
+  const fileDataStart = headerEndIdx + 4; // skip \r\n\r\n
+
+  // Find the closing boundary.
+  const closingBoundary = Buffer.from(`\r\n--${boundary}`);
+  const fileDataEnd = body.indexOf(closingBoundary, fileDataStart);
+  const fileData = fileDataEnd !== -1 ? body.subarray(fileDataStart, fileDataEnd) : body.subarray(fileDataStart);
+
+  // Extract filename from Content-Disposition header.
+  const filenameMatch = headerBlock.match(/filename="([^"]+)"/);
+  const originalName = filenameMatch ? path.basename(filenameMatch[1]) : "upload";
+
+  // Sanitize filename: keep only safe characters.
+  const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const destName = `${randomUUID()}-${safeName}`;
+  const destPath = path.join(UPLOAD_DIR, destName);
+
+  await fsp.writeFile(destPath, fileData);
+
+  res.statusCode = 200;
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify({ path: destPath, size: fileData.length, name: originalName }));
+}
 
 function createMcpServer(client: WhatsAppClient): McpServer {
   const server = new McpServer({
@@ -221,10 +328,22 @@ async function startHttpTransport(client: WhatsAppClient): Promise<void> {
   const mcpPath = resolveHttpPath();
   const sessions = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
 
+  // Ensure upload directory exists and start periodic cleanup.
+  await ensureUploadDir();
+  const cleanupTimer = setInterval(() => void cleanupUploads(), UPLOAD_CLEANUP_INTERVAL_MS);
+  cleanupTimer.unref(); // Don't keep the process alive just for cleanup.
+
   const httpServer = createServer((req, res) => {
     void (async () => {
       try {
         const reqUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+
+        // ── File upload endpoint ────────────────────────────────
+        if (reqUrl.pathname === "/upload" && (req.method || "").toUpperCase() === "POST") {
+          await handleUpload(req, res);
+          return;
+        }
+
         if (reqUrl.pathname !== mcpPath) {
           res.statusCode = 404;
           res.end("Not Found");
@@ -291,6 +410,7 @@ async function startHttpTransport(client: WhatsAppClient): Promise<void> {
   });
 
   console.error(`WhatsApp MCP server running via streamable HTTP at http://${host}:${port}${mcpPath}`);
+  console.error(`File upload endpoint available at http://${host}:${port}/upload`);
 }
 
 async function main(): Promise<void> {

@@ -7,7 +7,11 @@ import { Boom } from "@hapi/boom";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import pino from "pino";
+
+const execFileAsync = promisify(execFile);
 
 export interface WhatsAppMessage {
   id: string;
@@ -570,6 +574,18 @@ export class WhatsAppClient {
     // Fail early with a clear error if the path is wrong/unreadable.
     await fs.promises.access(resolvedPath, fs.constants.R_OK);
 
+    // Auto-convert non-OGG files to OGG Opus for voice notes.
+    let audioPath = resolvedPath;
+    let tempOgg: string | null = null;
+    if (kind === "voice" && !resolvedPath.toLowerCase().endsWith(".ogg")) {
+      const oggPath = resolvedPath.replace(/\.[^.]+$/, "") + ".ogg";
+      await execFileAsync("ffmpeg", [
+        "-i", resolvedPath, "-c:a", "libopus", "-b:a", "64k", "-y", oggPath,
+      ]);
+      audioPath = oggPath;
+      tempOgg = oggPath;
+    }
+
     // Use `{ url: filePath }` so Baileys can stream from disk.
     const content: any = (() => {
       switch (kind) {
@@ -580,18 +596,25 @@ export class WhatsAppClient {
         case "audio":
           return { audio: { url: resolvedPath }, mimetype, ptt: false };
         case "voice":
-          return { audio: { url: resolvedPath }, mimetype: mimetype || "audio/ogg; codecs=opus", ptt: true };
+          return { audio: { url: audioPath }, mimetype: "audio/ogg; codecs=opus", ptt: true };
         case "document":
         default:
           return { document: { url: resolvedPath }, mimetype, fileName, caption };
       }
     })();
 
-    const result = await sock.sendMessage(normalizedId, content);
-    return {
-      id: result?.key?.id || "unknown",
-      timestamp: this.toUnixSeconds((result as any)?.messageTimestamp),
-    };
+    try {
+      const result = await sock.sendMessage(normalizedId, content);
+      return {
+        id: result?.key?.id || "unknown",
+        timestamp: this.toUnixSeconds((result as any)?.messageTimestamp),
+      };
+    } finally {
+      // Clean up the temporary OGG file.
+      if (tempOgg) {
+        fs.promises.unlink(tempOgg).catch(() => {});
+      }
+    }
   }
 
   async downloadMedia(
