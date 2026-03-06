@@ -65,10 +65,51 @@ whatsapp-qr
 
 This script is installed at `/usr/local/bin/whatsapp-qr` and extracts the QR code from PM2 logs without timestamp prefixes.
 
+## Compound Workflow Patterns (for LLM Clients)
+
+When the MCP server runs remotely via HTTP, LLM clients need multi-step workflows to send/receive media. These patterns were validated through skill evaluation (see below).
+
+### Sending a Voice Note (TTS → Upload → Send)
+```
+1. Generate WAV locally (e.g., Voicebox TTS or macOS `say`)
+2. curl -s -F "file=@local.wav" http://server:8787/upload → {"path": "..."}
+3. whatsapp_send_file(chat_id="...", path="<server-path>", kind="voice")
+   Server auto-converts WAV → OGG Opus via ffmpeg.
+```
+
+### Receiving & Transcribing a Voice Note
+```
+1. whatsapp_list_messages(limit=10) → find voice-note entry
+2. whatsapp_download_media(chat_id, message_id) → server-local path
+3. curl -s -o /tmp/voice.ogg "http://server:8787/download?path=<server-path>"
+   OR: whatsapp_get_media(chat_id, message_id, format="base64") → Base64 (no curl needed)
+4. Transcribe locally (e.g., Voicebox ASR / Whisper)
+```
+
+### Receiving & Analyzing an Image
+```
+1. whatsapp_list_messages(limit=10) → find image entry
+2. whatsapp_get_media(chat_id, message_id, format="data_url") → data URL for display
+   OR: whatsapp_download_media → curl download → view locally
+3. Analyze image content
+```
+
+### Key Insight: `whatsapp_get_media` as Fallback
+When `curl`/Bash is unavailable (e.g., restricted subagent environments), `whatsapp_get_media` provides Base64 transfer without any shell commands. This is the recommended fallback for receiving media when HTTP download isn't possible.
+
+### Skill Evaluation Results (March 2026)
+A Claude Code skill (`whatsapp-workflows`) was created and benchmarked against a no-skill baseline:
+- **50% fewer tokens** (42k vs 85k average)
+- **63% faster** (163s vs 438s average)
+- **64% fewer tool calls** (29 vs 80 average)
+- Without the skill, agents had to read the MCP server source code to discover HTTP endpoints
+
 ## Known Limitations / Notes
 - **Baileys 7.x compatibility**: The code uses dynamic `await import()` for Baileys because version 7.x is ESM-only. Static imports will cause "Cannot find module" errors.
 - `whatsapp_download_media` only works for messages observed since the server started (raw message cache is in-memory and bounded).
 - Automatic voice note transcoding: `kind=voice` auto-converts non-OGG files to OGG/Opus via ffmpeg (requires `ffmpeg` on the server).
+- **WhatsApp voice note format**: WhatsApp requires OGG Opus for voice notes. Sending WAV/MP3 directly results in "file not available" errors on the recipient's device. The server handles this automatically with `kind=voice`.
+- **No WhatsApp transcripts via Baileys**: WhatsApp's built-in voice message transcription is on-device only. Baileys does not provide a `transcript` field — external ASR (like Voicebox/Whisper) is needed.
 - MCP config (Codex) was adjusted to run via `node` (because `dist/index.js` is not necessarily executable):
   - `~/.codex/config.toml` uses `command="node"` and `args=["/absolute/path/to/whatsapp-mcp-server/dist/index.js"]`.
 

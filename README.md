@@ -109,6 +109,8 @@ codex mcp add whatsapp --url http://127.0.0.1:8787/mcp
 | `WHATSAPP_HTTP_HOST` | `127.0.0.1` | Bind address for HTTP mode. Use `0.0.0.0` if clients connect from other hosts. |
 | `WHATSAPP_HTTP_PORT` | `8787` | TCP port for HTTP mode. |
 | `WHATSAPP_HTTP_PATH` | `/mcp` | HTTP endpoint path for MCP requests. |
+| `WHATSAPP_UPLOAD_DIR` | `/tmp/whatsapp-uploads` | Directory for uploaded files (HTTP mode). |
+| `WHATSAPP_UPLOAD_MAX_SIZE` | `52428800` | Max upload file size in bytes (default: 50 MB). |
 
 ## Tools Reference
 
@@ -203,6 +205,35 @@ Get detailed group information.
 - `group_id` (string) — Group JID (e.g., `120363012345678901@g.us`)
 
 **Returns:** Group subject, description, participant list with admin status.
+
+## HTTP File Transfer Endpoints (HTTP Mode)
+
+When running in HTTP mode, the server provides two additional endpoints for remote file transfer. These are essential for remote MCP clients that cannot access the server filesystem directly.
+
+### `POST /upload` — Upload a file to the server
+
+```bash
+curl -s -F "file=@/local/path/photo.jpg" http://server:8787/upload
+```
+
+**Response:**
+```json
+{"path": "/tmp/whatsapp-uploads/a1b2c3d4-photo.jpg", "size": 123456, "name": "photo.jpg"}
+```
+
+Use the returned `path` with `whatsapp_send_file`. Files are auto-cleaned after 1 hour.
+
+### `GET /download?path=...` — Download a file from the server
+
+```bash
+curl -s -o local-file.jpg "http://server:8787/download?path=/root/whatsapp-mcp-data/downloads/whatsapp-ABC123.jpeg"
+```
+
+Only serves files from allowed directories (`/tmp`, uploads dir, downloads dir) to prevent arbitrary file access.
+
+**Typical workflow:**
+1. `whatsapp_download_media` → returns a server-local path
+2. `GET /download?path=<server-path>` → download the file to your local machine
 
 ## How It Works
 
