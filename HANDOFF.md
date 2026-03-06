@@ -26,6 +26,13 @@ Repo: `<repo-root>`
 - Voice notes:
   - Inbound: detected as `audio` with `isVoiceNote=true`.
   - Outbound: send with `kind=voice` (sends as PTT/voice note).
+  - Auto-converts WAV/MP3/etc. to OGG Opus via ffmpeg before sending.
+- HTTP file upload endpoint (`POST /upload`):
+  - For remote MCP clients that cannot access the server filesystem.
+  - Accepts `multipart/form-data`, stores files in `/tmp/whatsapp-uploads/` (configurable via `WHATSAPP_UPLOAD_DIR`).
+  - Max file size: 50 MB (configurable via `WHATSAPP_UPLOAD_MAX_SIZE`).
+  - Auto-cleanup: files older than 1 hour are deleted every 10 minutes.
+  - Workflow: `curl -F "file=@local.wav" http://server:8787/upload` → returns `{"path": "/tmp/whatsapp-uploads/uuid-local.wav"}` → use path in `whatsapp_send_file`.
 
 Media support was merged via PR #4: https://github.com/ydmw74/whatsapp-mcp-server/pull/4
 
@@ -56,9 +63,20 @@ This script is installed at `/usr/local/bin/whatsapp-qr` and extracts the QR cod
 ## Known Limitations / Notes
 - **Baileys 7.x compatibility**: The code uses dynamic `await import()` for Baileys because version 7.x is ESM-only. Static imports will cause "Cannot find module" errors.
 - `whatsapp_download_media` only works for messages observed since the server started (raw message cache is in-memory and bounded).
-- No automatic audio transcoding: for `kind=voice` you should send a compatible file (typically OGG/Opus).
+- Automatic voice note transcoding: `kind=voice` auto-converts non-OGG files to OGG/Opus via ffmpeg (requires `ffmpeg` on the server).
 - MCP config (Codex) was adjusted to run via `node` (because `dist/index.js` is not necessarily executable):
   - `~/.codex/config.toml` uses `command="node"` and `args=["/absolute/path/to/whatsapp-mcp-server/dist/index.js"]`.
+
+## Maintenance Checklist
+
+When making changes to the server, always check for dependency updates — especially Baileys, which tracks the WhatsApp Web protocol and can break if outdated:
+
+```bash
+npm outdated
+npm view @whiskeysockets/baileys versions --json | tail -5
+```
+
+If a new Baileys version is available, update, test QR pairing + message send/receive, then deploy.
 
 ## How To Continue Next Time
 
@@ -71,7 +89,9 @@ npm install
 npm run build
 ```
 
-2. Restart the MCP client process (Codex/Claude Desktop) so tool definitions refresh (if you just updated code).
+2. Check for dependency updates (see Maintenance Checklist above).
+
+3. Restart the MCP client process (Codex/Claude Desktop) so tool definitions refresh (if you just updated code).
 
 ## Quick Manual Tests
 
